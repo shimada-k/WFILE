@@ -1,5 +1,5 @@
 # Makefile
-objs = watermark.o bitops.o wmf.c
+objs = watermark.o bitops.o wfile.c
 
 watermark: Makefile $(objs)
 	cc -Wall -o watermark $(objs) -lgd -DDEBUG
@@ -8,8 +8,8 @@ watermark.o: watermark.c
 	cc -Wall -c watermark.c -DDEBUG
 	#cc -Wall -c watermark.c
 
-wmf.o: bitops.h wmf.c wmf.h
-	cc -Wall -c wmf.c -DDEBUG
+wfile.o: bitops.h wfile.c wfile.h
+	cc -Wall -c wfile.c -DDEBUG
 
 bitops.o: bitops.c bitops.h
 	cc -Wall -c bitops.c -DDEBUG

@@ -4,7 +4,7 @@
 #include <gd.h>
 
 #include "bitops.h"
-#include "wmf.h"
+#include "wfile.h"
 
 int readWords(char *buf, size_t count)
 {

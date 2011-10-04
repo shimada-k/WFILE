@@ -4,7 +4,7 @@
 #include <gd.h>
 
 #include "bitops.h"
-#include "wmf.h"
+#include "wfile.h"
 
 #define COLOR_RED	0
 #define COLOR_GREEN	1
@@ -12,19 +12,22 @@
 
 /*
 	TODO 2011/10/4
-	・コードのリファクタリング
 	・wmfp_openのモードを増やす
-	・ビットプレーンにまたがった透かしを読み書きしてみる
 	・bitops, wmfドキュメントの作成
 */
 
+/******************************
+*
+*	ライブラリ内部関数
+*
+*******************************/
 
 #ifdef DEBUG
 /*
 	WFILE->oftの内容を表示する関数
 	@oft 表示するwoff構造体のアドレス
 */
-void print_offset(const woff_t *oft)
+void printOffset(const woff_t *oft)
 {
 	printf("[plane_no:%d (x:%d, y:%d), color:%d]\n", oft->plane_no, oft->x, oft->y, oft->color);
 }
@@ -35,7 +38,7 @@ void print_offset(const woff_t *oft)
 	@stream 処理するWFILEエントリのポインタ
 	return 処理するべきバイトの内容
 */
-static unsigned char get_color_from_oft(WFILE *stream)
+static unsigned char getColorFromOft(WFILE *stream)
 {
 	int color;
 	unsigned char result;
@@ -62,7 +65,7 @@ static unsigned char get_color_from_oft(WFILE *stream)
 	@val 色の輝度値
 	@stream 処理の対象のWFILEのポインタ
 */
-static void set_color_from_oft(unsigned char val, WFILE *stream)
+static void setColorFromOft(unsigned char val, WFILE *stream)
 {
 	int color;
 	unsigned char rgb[3];
@@ -85,7 +88,7 @@ static void set_color_from_oft(unsigned char val, WFILE *stream)
 	stream->offsetを1ドット分だけ進める関数
 	return 成功:0 失敗:-1
 */
-static int wmf_seek_dot(WFILE *stream)
+static int wseek_dot(WFILE *stream)
 {
 
 	/* oftを更新（座標、色、ビットプレーンの番号） */
@@ -97,7 +100,7 @@ static int wmf_seek_dot(WFILE *stream)
 
 				if(stream->offset.plane_no == 7){
 #ifdef DEBUG
-					print_offset(&stream->offset);
+					printOffset(&stream->offset);
 					puts("unassumption err");
 #endif
 					return -1;	/* 画像に埋め込める上限を越えたときは考慮されていない */
@@ -128,7 +131,7 @@ static int wmf_seek_dot(WFILE *stream)
 	@stream 処理するWFILEエントリ
 	@return 成功：透かし1バイトの内容 失敗：-1
 */
-static char wmf_read_byte(WFILE *stream)
+static char wread_byte(WFILE *stream)
 {
 	int i, bit;
 	unsigned char color;
@@ -140,17 +143,17 @@ static char wmf_read_byte(WFILE *stream)
 	}
 
 	for(i = 0; i < 8; i++){	/* 8ドット分ループ */
-		color = get_color_from_oft(stream);	/* ドットの値はunsigend char(0 - 255) */
+		color = getColorFromOft(stream);	/* ドットの値はunsigend char(0 - 255) */
 		bit = pick_nbit8(color, stream->offset.plane_no);
 #ifdef DEBUG
-		print_offset(&stream->offset);
+		printOffset(&stream->offset);
 		printf("bit:%d, color:%d\n", bit, color);
 #endif
 
 		/* ビットストリームに書き込む */
 		writeBitStream(stream->bs, bit);
 		/* 1 dot分だけオフセットを進める */
-		wmf_seek_dot(stream);
+		wseek_dot(stream);
 
 	}
 
@@ -170,7 +173,7 @@ static char wmf_read_byte(WFILE *stream)
 	@val 透かしとして埋め込むバイトの内容
 	@stream 処理対象のWFILEのアドレス
 */
-static void wmf_write_byte(char val, WFILE *stream)
+static void wwrite_byte(char val, WFILE *stream)
 {
 	int i, bit;
 	unsigned char color;
@@ -178,7 +181,7 @@ static void wmf_write_byte(char val, WFILE *stream)
 	stream->bs = openBitStream(&val, 1, "r");	/* valをもとにビットストリームを作成 */
 
 	for(i = 0; i < 8; i ++){	/* 8ドット分ループ */
-		color = get_color_from_oft(stream);	/* 処理すべきバイトを取得する */
+		color = getColorFromOft(stream);	/* 処理すべきバイトを取得する */
 
 		bit = readBitStream(stream->bs);
 
@@ -191,18 +194,25 @@ static void wmf_write_byte(char val, WFILE *stream)
 
 #ifdef DEBUG
 		//print_binary8(color);
-		print_offset(&stream->offset);
+		printOffset(&stream->offset);
 		printf("bit:%d, color:%d\n", bit, color);
 #endif
 
-		set_color_from_oft(color, stream);
+		setColorFromOft(color, stream);
 
 		/* 1 dot分だけオフセットを進める */
-		wmf_seek_dot(stream);
+		wseek_dot(stream);
 	}
 
 	closeBitStream(stream->bs);
 }
+
+
+/******************************
+*
+*	公開用ライブラリ関数
+*
+*******************************/
 
 /*
 	WFILEのエントリを作成する関数
@@ -288,9 +298,9 @@ WFILE *wopen(const char *path, const char *mode)
 
 /*
 	sizeバイトのデータを読み取り、ptrに格納する
-	return 実際に読み込めたデータのバイト数
 	@ptr 読み込んだデータを格納するバッファ（@sizeのサイズが無いといけない）
 	@size 読み込むサイズ（バイト）
+	return 実際に読み込めたデータのバイト数
  */
 size_t wread(void *ptr, size_t size, WFILE *stream)
 {
@@ -302,7 +312,7 @@ size_t wread(void *ptr, size_t size, WFILE *stream)
 	buf = (char *)ptr;
 
 	for(i = 0; i < size; i++){	/* バイトごとにループを回す */
-		if((result = wmf_read_byte(stream)) == -1){
+		if((result = wread_byte(stream)) == -1){
 #ifdef DEBUG
 			printf("result:%d, %d byte read\n", result, i);
 #endif
@@ -318,7 +328,7 @@ size_t wread(void *ptr, size_t size, WFILE *stream)
 }
 
 /*
-	prtからsizeバイトのデータをstreamに書込む
+	prtからsizeバイトのデータをstreamに書込む関数
 	return 実際に書き込めたデータの個数
 */
 size_t wwrite(const void *ptr, size_t size, WFILE *stream)
@@ -327,7 +337,7 @@ size_t wwrite(const void *ptr, size_t size, WFILE *stream)
 	size_t ret = 0;
 
 	for(i = 0; i < size; i++){
-		wmf_write_byte(*(char *)(ptr + i), stream);
+		wwrite_byte(*(char *)(ptr + i), stream);
 		ret++;
 	}
 
