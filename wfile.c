@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <gd.h>
+#include <errno.h>	/* perror(3) */
 
 #include "bitops.h"
 #include "wfile.h"
@@ -10,17 +11,17 @@
 #define COLOR_GREEN	1
 #define COLOR_BLUE	2
 
-/*
-	TODO 2011/10/4
-	・wmfp_openのモードを増やす
-	・bitops, wmfドキュメントの作成
-*/
 
 /******************************
 *
 *	ライブラリ内部関数
 *
 *******************************/
+
+#define	IS_READ(mode)		pick_nbit8(mode, 0)
+#define	IS_WRITE(mode)	pick_nbit8(mode, 1)
+#define	IS_CREATE(mode)	pick_nbit8(mode, 2)
+#define	WRITE_OFF_END(mode)	pick_nbit8(mode, 3)
 
 #ifdef DEBUG
 /*
@@ -72,11 +73,13 @@ static void setColorFromOft(unsigned char val, WFILE *stream)
 
 	color = gdImageGetPixel(stream->img, stream->offset.x, stream->offset.y);
 
-	rgb[COLOR_RED] = (unsigned char)gdImageRed(stream->img, color);
-	rgb[COLOR_GREEN] = (unsigned char)gdImageGreen(stream->img, color);
-	rgb[COLOR_BLUE] = (unsigned char)gdImageBlue(stream->img, color);
+	rgb[COLOR_RED]	= (unsigned char)gdImageRed(stream->img, color);
+	rgb[COLOR_GREEN]	= (unsigned char)gdImageGreen(stream->img, color);
+	rgb[COLOR_BLUE]	= (unsigned char)gdImageBlue(stream->img, color);
 
-	/* エラー処理 stream->offset.colorが3以上の数値を指していないかどうか */
+	if(sream->offset->color > 2){
+		puts("setColorFromOft:invalid color number");
+	}
 
 	rgb[stream->offset.color] = val;
 
@@ -101,7 +104,7 @@ static int wseek_dot(WFILE *stream)
 				if(stream->offset.plane_no == 7){
 #ifdef DEBUG
 					printOffset(&stream->offset);
-					puts("unassumption err");
+					puts("wseek_dot:watermark size over-flowed");
 #endif
 					return -1;	/* 画像に埋め込める上限を越えたときは考慮されていない */
 				}
@@ -138,7 +141,7 @@ static char wread_byte(WFILE *stream)
 	char result = -1;	/* 透かしは文字なのでcharでいい(asciiコードにマイナスの値は無い) */
 
 	if((stream->bs = openBitStream(NULL, 1, "w")) == NULL){	/* 書き込みモードでビットストリームをopen */
-		puts("err openBitStream()");
+		puts("wread_byte:cannot open bitstream");
 		return result;
 	}
 
@@ -157,7 +160,9 @@ static char wread_byte(WFILE *stream)
 
 	}
 
+#ifdef DEBUG
 	printf("%d 0x%02x ", *(char *)stream->bs->raw_data, *(char *)stream->bs->raw_data);	/* 読み出す時は透かし(== ascii)なのでchar変数として読み出し */
+#endif
 
 	memcpy(&result, (char *)stream->bs->raw_data, 1);
 
@@ -230,10 +235,10 @@ WFILE *wopen(const char *path, const char *mode)
 	/* エラー処理、pathが「.png」で終わっているか */
 
 	/* とりあえず2種類のモードだけ実装 */
-	if(strcmp(mode, "r") == 0){	/* 読み込みモード */
+	if(strcmp(mode, "r") == 0){			/* MODE_READ */
 		if((fp = fopen(path, mode)) == NULL){
 #ifdef DEBUG
-			printf("%s is not found\n", path);
+			perror("wopen");
 #endif
 			return NULL;
 		}
@@ -254,19 +259,19 @@ WFILE *wopen(const char *path, const char *mode)
 		wmfp->offset.y = 0;
 		wmfp->offset.color = COLOR_RED;
 	}
-	else if(strcmp(mode, "w") == 0){	/* 書き込みモード */
+	else if(strcmp(mode, "w") == 0){		/* MODE_WRITE */
 
 		if((fp = fopen("./img/logo_mini.png", "r")) == NULL){
 #ifdef DEBUG
-			printf("%s is not found\n", path);
+			perror("wopen");
 #endif
 			return NULL;
 		}
-		wmfp->img = gdImageCreateFromPng(fp);
+		wmfp->img = gdImageCreateFromPng(fp);	/* fpからイメージを作成 */
 
 		if((wmfp->fp = fopen(path, "wb")) == NULL){	/* これは画像ファイルが出力されるのでwbモード */
 #ifdef DEBUG
-			printf("%s is not found\n", path);
+			perror("wopen");
 #endif
 			return NULL;
 		}
@@ -301,13 +306,13 @@ WFILE *wopen(const char *path, const char *mode)
 	@ptr 読み込んだデータを格納するバッファ（@sizeのサイズが無いといけない）
 	@size 読み込むサイズ（バイト）
 	return 実際に読み込めたデータのバイト数
- */
+*/
 size_t wread(void *ptr, size_t size, WFILE *stream)
 {
 	int i;
 	char result;
-	size_t ret = 0;
 	char *buf;
+	size_t ret = 0;
 
 	buf = (char *)ptr;
 
@@ -316,7 +321,7 @@ size_t wread(void *ptr, size_t size, WFILE *stream)
 #ifdef DEBUG
 			printf("result:%d, %d byte read\n", result, i);
 #endif
-			break;
+			return ret;
 		}
 		else{
 			buf[i] = result;
