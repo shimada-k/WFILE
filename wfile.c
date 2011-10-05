@@ -77,7 +77,7 @@ static void setColorFromOft(unsigned char val, WFILE *stream)
 	rgb[COLOR_GREEN]	= (unsigned char)gdImageGreen(stream->img, color);
 	rgb[COLOR_BLUE]	= (unsigned char)gdImageBlue(stream->img, color);
 
-	if(sream->offset->color > 2){
+	if(stream->offset.color > 2){
 		puts("setColorFromOft:invalid color number");
 	}
 

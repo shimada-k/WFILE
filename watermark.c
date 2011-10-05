@@ -6,6 +6,40 @@
 #include "bitops.h"
 #include "wfile.h"
 
+/*
+	TODO
+	・FUSEの開発環境をノートPCに構築する
+	・明日の持ち物を洗い出す
+	・ホテルの地図を印刷しておく
+	
+*/
+
+
+/*
+	pathのファイルに書かれているテキストのバイト数を返す関数
+	@path ファイルのパス
+	return バイト数
+*/
+long getWordLength(const char *path)
+{
+	long sz;
+	FILE *fp = fopen(path, "rb"); 
+ 
+	/* ファイルサイズを調査 */ 
+	fseek(fp, 0, SEEK_END); 
+	sz = ftell(fp);
+ 
+	fclose(fp);
+ 
+	return sz;
+}
+
+/*
+	テキストファイルを読み込み、引数のメモリ領域にコピーする関数
+	@buf コピーする先のメモリ
+	@count コピーするサイズ
+	return コピーしたバイト数
+*/
 int readWords(char *buf, size_t count)
 {
 	FILE *f;
@@ -26,17 +60,26 @@ int readWords(char *buf, size_t count)
 int main(int argc, char *argv[])
 {
 	WFILE *wmfp = NULL;
-	char *words = NULL;
-	int water_mark_length = 0;
+	char *path, *words = NULL;
+	long wlength = 0;
 	int mode = -1;
 
 	/* 引数解析 */
-	if(argc == 2){
+	if(argc == 2 || argc == 3){
 		if(strcmp(argv[1], "-r") == 0){	/* 透かしを読むモード */
-			mode = 1;
+			mode = MODE_READ;
 		}
 		else if(strcmp(argv[1], "-w") == 0){	/* 透かしを書くモード */
-			mode = 2;
+			if(argc == 2){
+				puts("bad feeling");	/* 引数エラー */
+				return 0;
+			}
+			else{
+				path = argv[2];
+			}
+
+			mode = MODE_WRITE;
+			wlength = (unsigned int)getWordLength(path);
 		}
 	}
 
@@ -46,32 +89,29 @@ int main(int argc, char *argv[])
 		return 0;
 	}
 
-	//if((words = calloc(1026, sizeof(char))) == NULL){
-	if((words = calloc(13502, sizeof(char))) == NULL){
+	if((words = calloc(wlength, sizeof(char))) == NULL){
 		puts("calloc err");
 	}
 
-	if(mode == 1){	/* 透かしを読むモード */
+	if(mode == MODE_READ){	/* 透かしを読むモード */
 		if((wmfp = wopen("write_test.png", "r")) == NULL){
 			puts("wmf_open err");
 		}
-		//wmf_read(words, 1026, wmfp);
-		wread(words, 13502, wmfp);
+		wread(words, wlength, wmfp);
 
 		wclose(wmfp);
 	}
-	else if(mode == 2){	/* 透かしを書くモード */
+	else if(mode == MODE_WRITE){	/* 透かしを書くモード */
 
 		if((wmfp = wopen("write_test.png", "w")) == NULL){
 			puts("wmf_open err");
 		}
 
-		//water_mark_length = readWords(words, 1026);
-		water_mark_length = readWords(words, 13502);
-		printf("%d charctor is read\n", water_mark_length);
+		readWords(words, wlength);
 
-		//wmf_write(words, 1026, wmfp);
-		wwrite(words, 13502, wmfp);
+		printf("%d charctor is read\n", wlength);
+
+		wwrite(words, wlength, wmfp);
 
 		wclose(wmfp);
 	}
