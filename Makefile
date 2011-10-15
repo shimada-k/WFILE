@@ -2,7 +2,7 @@
 objs = watermark.o bitops.o wfile.c
 
 watermark: Makefile $(objs)
-	cc -Wall -o watermark $(objs) -lgd -DDEBUG
+	cc -Wall -o watermark $(objs) -lpng -DDEBUG
 
 watermark.o: watermark.c
 	cc -Wall -c watermark.c -DDEBUG
