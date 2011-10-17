@@ -1,11 +1,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <gd.h>
 
 #include "bitops.h"
 #include "wfile.h"
 
+
+#define WORD_FILE	"./words/obama.txt"
 
 /*
 	pathのファイルに書かれているテキストのバイト数を返す関数
@@ -37,7 +38,7 @@ int readWords(char *buf, size_t count)
 	FILE *f;
 	int c, idx = 0;
 
-	f = fopen("./words/love_addict.txt", "r");
+	f = fopen(WORD_FILE, "r");
 
 	while((c = fgetc(f)) != EOF){
 		buf[idx] = (char)c;
@@ -61,12 +62,12 @@ int main(int argc, char *argv[])
 		if(strcmp(argv[1], "-r") == 0){	/* 透かしを読むモード */
 			mode = MODE_READ;
 			path = argv[2];
-			wlength = (unsigned int)getWordLength("./words/love_addict.txt");
+			wlength = (unsigned int)getWordLength(WORD_FILE);
 		}
 		else if(strcmp(argv[1], "-w") == 0){	/* 透かしを書くモード */
 			mode = MODE_WRITE;
 			path = argv[2];
-			wlength = (unsigned int)getWordLength("./words/love_addict.txt");
+			wlength = (unsigned int)getWordLength(WORD_FILE);
 		}
 	}
 
@@ -88,6 +89,7 @@ int main(int argc, char *argv[])
 		wread(words, wlength, wmfp);
 
 		wclose(wmfp);
+		printf("%s\n", words);	/* 読み込んだ透かしを表示 */
 	}
 	else if(mode == MODE_WRITE){	/* 透かしを書くモード */
 
@@ -103,8 +105,6 @@ int main(int argc, char *argv[])
 
 		wclose(wmfp);
 	}
-
-	printf("%s\n", words);
 
 	free(words);
 

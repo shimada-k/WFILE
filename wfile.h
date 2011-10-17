@@ -27,12 +27,11 @@ typedef struct {	/* 次に画像中のどのピクセルを処理するか（カ
 }woff_t;
 
 struct png_operation_specs{
-	int x_size, y_size;		/* 画像の縦、横のサイズ */
-	int number_of_passes;	/* インターレース関連 */
-	png_byte color_type;		/* カラータイプ */
-	png_byte bit_depth;		/* ビット深度 */
+	png_uint_32 x_size, y_size;		/* 画像の縦、横のサイズ */
+	int color_type;		/* カラータイプ */
+	int bit_depth;		/* ビット深度 */
 
-	png_bytep *row_pointers;	/* この宣言での実体は二重ポインタ */
+	png_bytep *row_pointers;
 };
 
 typedef struct {

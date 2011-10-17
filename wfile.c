@@ -14,7 +14,12 @@
 
 /*
 	TODO
-	エラー処理の追加（メモリの確保のところなど）
+	画像のデータ分一気にメモリを確保するのではなく、渡されたデータ分だけ行を確保する
+
+	まずは新規書き込みの場合を考える
+		wread()で渡されたデータサイズから埋め込むのに必要な行数を計算
+
+	追加書き込みの場合にはオフセットから渡されたデータ分が含まれる行数を求めるロジックが必要
 	
 */
 
@@ -274,6 +279,8 @@ static void setOffsetToChunk(const woff_t *offset, png_structp png_ptr, png_info
 }
 #endif
 
+#define SIG_CHECK_SIZE	8	/* PNGシグネチャをチェックするバイト数（4〜8） */
+
 /*
 	ファイルからspecsを作る関数
 	@fname 読み込むファイルのパス
@@ -281,8 +288,8 @@ static void setOffsetToChunk(const woff_t *offset, png_structp png_ptr, png_info
 */
 static void readPngFile(const char *fname, WFILE *wmfp)
 {
-	char header[8];    // 8 is the maximum size that can be checked
-	int y;
+	char header[SIG_CHECK_SIZE];    // 8 is the maximum size that can be checked
+	int y, interlace_method, compression_method, filter_method;
 	/* open file and test for it being a png */
 	FILE *fp = NULL;
 	png_structp png_ptr;		/* PNG管理用構造体 */
@@ -294,9 +301,9 @@ static void readPngFile(const char *fname, WFILE *wmfp)
 		printf("[readPngFile] File %s could not be opened for reading\n", fname);
 	}
 
-	fread(header, 1, 8, fp);
+	fread(header, 1, SIG_CHECK_SIZE, fp);
 
-	if(png_sig_cmp((png_bytep)header, 0, 8)){
+	if(png_sig_cmp((png_bytep)header, 0, SIG_CHECK_SIZE)){
 		printf("[readPngFile] File %s is not recognized as a PNG file\n", fname);
 	}
 
@@ -318,7 +325,7 @@ static void readPngFile(const char *fname, WFILE *wmfp)
 	}
 
 	png_init_io(png_ptr, fp);
-	png_set_sig_bytes(png_ptr, 8);
+	png_set_sig_bytes(png_ptr, SIG_CHECK_SIZE);
 
 	png_read_info(png_ptr, info_ptr);
 
@@ -334,35 +341,44 @@ static void readPngFile(const char *fname, WFILE *wmfp)
 		wmfp->offset.color = COLOR_RED;
 	}
 
-	/* 各種データの取得 */
-	wmfp->specs.x_size = png_get_image_width(png_ptr, info_ptr);
-	wmfp->specs.y_size = png_get_image_height(png_ptr, info_ptr);
+	/* 縦横サイズ、ビット深度、カラータイプなど取得 */
+	png_get_IHDR(png_ptr, info_ptr, &wmfp->specs.x_size, &wmfp->specs.y_size, &wmfp->specs.bit_depth,
+			&wmfp->specs.color_type, &interlace_method, &compression_method, &filter_method);
 
-	wmfp->specs.color_type = png_get_color_type(png_ptr, info_ptr);
-	wmfp->specs.bit_depth = png_get_bit_depth(png_ptr, info_ptr);
+	if(interlace_method){	/* インターレース方式を採用した画像は対象外 */
+		puts("interlace is valid, not supported");
+		return;
+	}
 
-	wmfp->specs.number_of_passes = png_set_interlace_handling(png_ptr);
-	png_read_update_info(png_ptr, info_ptr);
+#ifdef DEBUG
+	printf("x:%lu, y:%lu, bit_depth:%d, color_type:%d, interlace:%d, compression:%d, filter:%d\n"
+		,wmfp->specs.x_size, wmfp->specs.y_size, wmfp->specs.bit_depth, wmfp->specs.color_type,
+		interlace_method, compression_method, filter_method);
+#endif
 
 	/* ここからバイト列の読み込み */
 	if (setjmp(png_jmpbuf(png_ptr))){
 		puts("[readPngFile] Error during read_image");
 	}
 
-	/* メモリを確保する これで配列でアクセスできるようにする */
-	wmfp->specs.row_pointers = (png_bytep *)malloc(sizeof(png_bytep) * wmfp->specs.y_size);
-
 #ifdef DEBUG
 	printf("png_get_rowbytes = %lu\n", png_get_rowbytes(png_ptr, info_ptr));
 #endif
 
+	wmfp->specs.row_pointers = (png_bytep *)malloc(sizeof(png_bytep) * wmfp->specs.y_size);
+
 	/* メモリを確保 これで列単位でアクセスできるようになる */
 	for (y = 0; y < wmfp->specs.y_size; y++){
 		wmfp->specs.row_pointers[y] = (png_byte *)malloc(png_get_rowbytes(png_ptr, info_ptr));
+
+		if(wmfp->specs.row_pointers[y] == NULL){
+			puts("malloc err");
+		}
 	}
 
 	png_read_image(png_ptr, wmfp->specs.row_pointers);
 
+	png_destroy_read_struct(&png_ptr, &info_ptr, NULL);	/* libpng内データの解放 */
 	fclose(fp);
 }
 
@@ -463,6 +479,7 @@ static void writePngFile(WFILE *wmfp)
 	}
 
 	png_write_end(png_ptr, NULL);
+	png_destroy_write_struct(&png_ptr, &info_ptr);	/* libpng内データの解放 */
 }
 
 /******************************
@@ -558,8 +575,6 @@ size_t wread(void *ptr, size_t size, WFILE *stream)
 			buf[i] = result;
 			ret++;
 		}
-
-		puts("piyo");
 	}
 
 	return ret;
@@ -593,7 +608,9 @@ void wclose(WFILE *stream)
 	if(stream->mode.split.can_write){	/* 書込み許可なモードだとout_fpがオープンされている */
 		writePngFile(stream);
 
-		fclose(stream->out_fp);
+		if(stream->out_fp){
+			fclose(stream->out_fp);
+		}
 	}
 
 	/* specs内のメモリの解放 */
