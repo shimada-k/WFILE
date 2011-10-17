@@ -9,6 +9,8 @@
 
 #define BASE_IMG		"./img/logo_mini.png"	/* もと画像 */
 
+#define STR_PATH_MAX		128	/* wopen()のpathが指す最大バイト数 */
+
 typedef union wfile_mode{	/* wopen()のモードを表す構造体 */
 	struct{
 		unsigned char can_read:1;
@@ -27,7 +29,7 @@ typedef struct {	/* 次に画像中のどのピクセルを処理するか（カ
 }woff_t;
 
 struct png_operation_specs{
-	png_uint_32 x_size, y_size;		/* 画像の縦、横のサイズ */
+	png_uint_32 x_size, y_size;	/* 画像の縦、横のサイズ */
 	int color_type;		/* カラータイプ */
 	int bit_depth;		/* ビット深度 */
 
@@ -35,6 +37,9 @@ struct png_operation_specs{
 };
 
 typedef struct {
+	char *path;	/* ファイル名 */
+	size_t size;	/* wopenで渡されるsize */
+
 	struct png_operation_specs	specs;	/* 画像管理用構造体 */
 
 	wfile_mode_t mode;

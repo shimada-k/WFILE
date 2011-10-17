@@ -6,7 +6,7 @@
 #include "wfile.h"
 
 
-#define WORD_FILE	"./words/obama.txt"
+#define WORD_FILE	"./words/love_addict.txt"
 
 /*
 	pathのファイルに書かれているテキストのバイト数を返す関数
@@ -69,6 +69,11 @@ int main(int argc, char *argv[])
 			path = argv[2];
 			wlength = (unsigned int)getWordLength(WORD_FILE);
 		}
+		else if(strcmp(argv[1], "-a") == 0){	/* 透かしを追記で書くモード */
+			mode = MODE_APPEND;
+			path = argv[2];
+			wlength = (unsigned int)getWordLength(WORD_FILE);
+		}
 	}
 
 	/* 引数違反 */
@@ -93,6 +98,20 @@ int main(int argc, char *argv[])
 	}
 	else if(mode == MODE_WRITE){	/* 透かしを書くモード */
 
+		if((wmfp = wopen(path, "w")) == NULL){
+			puts("wmf_open err");
+		}
+
+		readWords(words, wlength);
+
+		printf("%lu charctor is read\n", wlength);
+
+		wwrite(words, wlength, wmfp);
+
+		wclose(wmfp);
+	}
+	else if(mode == MODE_APPEND){	/* 透かしを書くモード */
+
 		if((wmfp = wopen(path, "a")) == NULL){
 			puts("wmf_open err");
 		}
@@ -105,6 +124,7 @@ int main(int argc, char *argv[])
 
 		wclose(wmfp);
 	}
+
 
 	free(words);
 

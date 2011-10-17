@@ -15,11 +15,9 @@
 /*
 	TODO
 	画像のデータ分一気にメモリを確保するのではなく、渡されたデータ分だけ行を確保する
-
-	まずは新規書き込みの場合を考える
-		wread()で渡されたデータサイズから埋め込むのに必要な行数を計算
-
-	追加書き込みの場合にはオフセットから渡されたデータ分が含まれる行数を求めるロジックが必要
+	画像中のあるrowだけ変更して書き込みは無理だった。
+		行ごとに書き込めば？
+		write_rowとかの関数を作って、wread()のsizeでループ
 	
 */
 
@@ -29,11 +27,6 @@
 *	ライブラリ内部関数
 *
 *******************************/
-
-#define	IS_READ(mode)		pick_nbit8(mode, 0)
-#define	IS_WRITE(mode)	pick_nbit8(mode, 1)
-#define	IS_CREATE(mode)	pick_nbit8(mode, 2)
-#define	WRITE_OFF_END(mode)	pick_nbit8(mode, 3)
 
 #ifdef DEBUG
 /*
@@ -289,15 +282,15 @@ static void setOffsetToChunk(const woff_t *offset, png_structp png_ptr, png_info
 static void readPngFile(const char *fname, WFILE *wmfp)
 {
 	char header[SIG_CHECK_SIZE];    // 8 is the maximum size that can be checked
-	int y, interlace_method, compression_method, filter_method;
+	int i, interlace_method, compression_method, filter_method;
+	png_structp png_ptr;
+	png_infop info_ptr;
+	FILE *fp;
 	/* open file and test for it being a png */
-	FILE *fp = NULL;
-	png_structp png_ptr;		/* PNG管理用構造体 */
-	png_infop info_ptr;		/* PNG管理用構造体 */
 
 	fp = fopen(fname, "rb");
 
-	if(!fp){
+	if(fp == NULL){
 		printf("[readPngFile] File %s could not be opened for reading\n", fname);
 	}
 
@@ -356,70 +349,32 @@ static void readPngFile(const char *fname, WFILE *wmfp)
 		interlace_method, compression_method, filter_method);
 #endif
 
+	wmfp->specs.row_pointers = (png_bytep *)malloc(sizeof(png_bytep) * wmfp->specs.y_size);
+
+	//allocRowPtrs(wmfp);
+
+	/* メモリを確保 これで列単位でアクセスできるようになる */
+	for(i = 0; i < wmfp->specs.y_size; i++){
+		wmfp->specs.row_pointers[i] = (png_byte *)malloc(png_get_rowbytes(png_ptr, info_ptr));
+
+		if(wmfp->specs.row_pointers[i] == NULL){
+			puts("malloc err");
+		}
+	}
+
 	/* ここからバイト列の読み込み */
 	if (setjmp(png_jmpbuf(png_ptr))){
 		puts("[readPngFile] Error during read_image");
 	}
 
-#ifdef DEBUG
-	printf("png_get_rowbytes = %lu\n", png_get_rowbytes(png_ptr, info_ptr));
-#endif
-
-	wmfp->specs.row_pointers = (png_bytep *)malloc(sizeof(png_bytep) * wmfp->specs.y_size);
-
-	/* メモリを確保 これで列単位でアクセスできるようになる */
-	for (y = 0; y < wmfp->specs.y_size; y++){
-		wmfp->specs.row_pointers[y] = (png_byte *)malloc(png_get_rowbytes(png_ptr, info_ptr));
-
-		if(wmfp->specs.row_pointers[y] == NULL){
-			puts("malloc err");
-		}
+	for(i = 0; i < wmfp->specs.y_size; i++){
+		png_read_rows(png_ptr, &wmfp->specs.row_pointers[i], NULL, 1);
 	}
 
-	png_read_image(png_ptr, wmfp->specs.row_pointers);
-
+	printf("offset_x:%lu, offset_y:%lu\n",  png_get_x_offset_pixels(png_ptr, info_ptr),  png_get_y_offset_pixels(png_ptr, info_ptr));
 	png_destroy_read_struct(&png_ptr, &info_ptr, NULL);	/* libpng内データの解放 */
+
 	fclose(fp);
-}
-
-/*
-	文字列のモードからwfile_mode_tを返す関数
-	@str wopen()呼び出し側が設定した文字列
-	return wfile_mode_t変数
-*/
-static wfile_mode_t transrateStrToMode(const char *str)
-{
-	wfile_mode_t mode;
-
-	mode.full = 0;
-
-	if(strcmp(str, "r") == 0){
-		mode.full = MODE_READ;
-	}
-	else if(strcmp(str, "r+") == 0){
-		mode.full = MODE_READ_PLUS;
-	}
-	else if(strcmp(str, "w") == 0){
-		mode.full = MODE_WRITE;
-	}
-	else if(strcmp(str, "w+") == 0){
-		mode.full = MODE_WRITE_PLUS;
-	}
-	else if(strcmp(str, "a") == 0){
-		mode.full = MODE_APPEND;
-	}
-	else if(strcmp(str, "a+") == 0){
-		mode.full = MODE_APPEND_PLUS;
-	}
-	else{
-		puts("Invalide wopen mode");
-	}
-
-#ifdef DEBUG
-	printf("mode.full = 0x%02x\n", mode.full);
-#endif
-
-	return mode;
 }
 
 /*
@@ -428,6 +383,7 @@ static wfile_mode_t transrateStrToMode(const char *str)
 */
 static void writePngFile(WFILE *wmfp)
 {
+	int i;
 	struct png_operation_specs *specs = &wmfp->specs;
 	png_structp png_ptr;		/* PNG管理用構造体 */
 	png_infop info_ptr;		/* PNG管理用構造体 */
@@ -469,7 +425,11 @@ static void writePngFile(WFILE *wmfp)
 		puts("[writePngFile] Error during writing bytes");
 	}
 
-	png_write_image(png_ptr, specs->row_pointers);
+	//png_write_image(png_ptr, specs->row_pointers);
+
+	for(i = 0; i < specs->y_size; i++){
+		png_write_row(png_ptr, specs->row_pointers[i]);
+	}
 
 	puts("write complete");
 
@@ -480,6 +440,61 @@ static void writePngFile(WFILE *wmfp)
 
 	png_write_end(png_ptr, NULL);
 	png_destroy_write_struct(&png_ptr, &info_ptr);	/* libpng内データの解放 */
+}
+
+
+/*
+	wopen()で渡されたファイル名とモードに基づいてPNGのイメージを作成する関数
+	@stream 対象のWFILEのアドレス
+*/
+static void openImageByMode(WFILE *wmfp)
+{
+	/* ファイル一つにつきreadPngFile１回 */
+
+	if(access(wmfp->path, F_OK) == 0){	/* ファイルが存在する場合 */
+
+		if(wmfp->mode.split.can_read && wmfp->mode.split.can_write == 0){	/* 読み込みだけ */
+			/* pathからspecを作る */
+			readPngFile(wmfp->path, wmfp);
+		}
+		else if(wmfp->mode.split.can_read == 0 && wmfp->mode.split.can_write){	/* 書き込みだけ */
+			if(wmfp->mode.split.can_trancate){	/* 長さを切り詰める場合 */
+				/* もと画像からspecを作る */
+				readPngFile(BASE_IMG, wmfp);
+			}
+			else{
+				/* pathからspecを作る */
+				readPngFile(wmfp->path, wmfp);
+			}
+			/* 書き込み用にwmfp->out_fpもオープンしておく */
+			wmfp->out_fp = fopen(wmfp->path, "wb");
+		}
+		else if(wmfp->mode.split.can_read && wmfp->mode.split.can_write){	/* 読み込み＋書き込み */
+			if(wmfp->mode.split.can_trancate){	/* 長さを切り詰める場合 */
+				/* もと画像からspecを作る */
+				readPngFile(BASE_IMG, wmfp);
+			}
+			else{
+				readPngFile(wmfp->path, wmfp);
+			}
+			/* 書き込み用にwmfp->out_fpもオープンしておく */
+			wmfp->out_fp = fopen(wmfp->path, "wb");
+		}
+
+	}
+	else{	/* ファイルが存在しない場合 */
+		if(wmfp->mode.split.can_create){	/* 新規作成できるなら作成する */
+			/* もと画像からspecを作る */
+			readPngFile(BASE_IMG, wmfp);
+
+			wmfp->out_fp = fopen(wmfp->path, "wb");
+		}
+		else{
+			puts("err");
+		}
+	}
+
+	free(wmfp->path);	/* wopen()でmallocした分 */
 }
 
 /******************************
@@ -495,55 +510,40 @@ static void writePngFile(WFILE *wmfp)
 WFILE *wopen(const char *path, const char *str)
 {
 	WFILE *wmfp = NULL;
+	size_t len;
+
 
 	if((wmfp = malloc(sizeof(WFILE))) == NULL){
 		return NULL;
 	}
 
-	/* 文字列モードを変換 */
-	wmfp->mode = transrateStrToMode(str);
+	len = sizeof(char) * (strlen(path) + 1);	/* strlen(3)は終端文字分を計算しないので+1 */
 
-	if(access(path, F_OK) == 0){	/* ファイルが存在する場合 */
+	wmfp->path = (char *)malloc(len);	/* free()はopenImageByMode()が担当する */
 
-		if(wmfp->mode.split.can_read && wmfp->mode.split.can_write == 0){	/* 読み込みだけ */
-			/* pathからspecを作る */
-			readPngFile(path, wmfp);
-		}
-		else if(wmfp->mode.split.can_read == 0 && wmfp->mode.split.can_write){	/* 書き込みだけ */
-			if(wmfp->mode.split.can_trancate){	/* 長さを切り詰める場合 */
-				/* もと画像からspecを作る */
-				readPngFile(BASE_IMG, wmfp);
-			}
-			else{
-				/* pathからspecを作る */
-				readPngFile(path, wmfp);
-			}
-			/* 書き込み用にwmfp->out_fpもオープンしておく */
-			wmfp->out_fp = fopen(path, "wb");
-		}
-		else if(wmfp->mode.split.can_read && wmfp->mode.split.can_write){	/* 読み込み＋書き込み */
-			if(wmfp->mode.split.can_trancate){	/* 長さを切り詰める場合 */
-				/* もと画像からspecを作る */
-				readPngFile(BASE_IMG, wmfp);
-			}
-			else{
-				readPngFile(path, wmfp);
-			}
-			/* 書き込み用にwmfp->out_fpもオープンしておく */
-			wmfp->out_fp = fopen(path, "wb");
-		}
+	strncpy(wmfp->path, path, len);
 
+	/* strをモード変数に変換 */
+	if(strcmp(str, "r") == 0){
+		wmfp->mode.full = MODE_READ;
 	}
-	else{	/* ファイルが存在しない場合 */
-		if(wmfp->mode.split.can_create){	/* 新規作成できるなら作成する */
-			/* もと画像からspecを作る */
-			readPngFile(BASE_IMG, wmfp);
-
-			wmfp->out_fp = fopen(path, "wb");
-		}
-		else{
-			puts("err");
-		}
+	else if(strcmp(str, "r+") == 0){
+		wmfp->mode.full = MODE_READ_PLUS;
+	}
+	else if(strcmp(str, "w") == 0){
+		wmfp->mode.full = MODE_WRITE;
+	}
+	else if(strcmp(str, "w+") == 0){
+		wmfp->mode.full = MODE_WRITE_PLUS;
+	}
+	else if(strcmp(str, "a") == 0){
+		wmfp->mode.full = MODE_APPEND;
+	}
+	else if(strcmp(str, "a+") == 0){
+		wmfp->mode.full = MODE_APPEND_PLUS;
+	}
+	else{
+		puts("Invalide wopen mode");
 	}
 
 	return wmfp;
@@ -559,10 +559,14 @@ size_t wread(void *ptr, size_t size, WFILE *stream)
 {
 	int i;
 	char result;
-	char *buf;
+	char *buf = (char *)ptr;
 	size_t ret = 0;
 
-	buf = (char *)ptr;
+	stream->size = size;
+
+	openImageByMode(stream);
+
+	//allocateRows(stream, size);
 
 	for(i = 0; i < size; i++){	/* バイトごとにループを回す */
 		if((result = wread_byte(stream)) == -1){
@@ -588,6 +592,9 @@ size_t wwrite(const void *ptr, size_t size, WFILE *stream)
 {
 	int i;
 	size_t ret = 0;
+
+	openImageByMode(stream);
+	//allocateRows(stream, size);
 
 	for(i = 0; i < size; i++){
 		wwrite_byte(*(char *)(ptr + i), stream);
