@@ -42,72 +42,76 @@ void printOffset(const woff_t *oft)
 
 /*
 	WFILEのオフセットから次に処理するべきバイトの内容を返す
-	@stream 処理するWFILEエントリのポインタ
+	@wmfp 処理するWFILEエントリのポインタ
 	return 処理するべきバイトの内容
 */
-static png_byte getColorFromOft(WFILE *stream)
+static png_byte getColorFromOft(WFILE *wmfp)
 {
 	png_byte *row, *ptr;
 
-	row = stream->specs.row_pointers[stream->offset.y];
+	row = wmfp->sspecs.row_pointers[wmfp->offset.y];
 
-	ptr = &(row[stream->offset.x * 4]);
+	//row = &wmfp->sspecs.row_pointers[wmfp->offset.y];
 
-	return ptr[stream->offset.color];
+	ptr = &(row[wmfp->offset.x * 4]);
+
+	return ptr[wmfp->offset.color];
 }
 
 /*
-	WFILEのオフセットからvalの値をstream->imgに埋め込む
+	WFILEのオフセットからvalの値をwmfp->imgに埋め込む
 	@val 色の輝度値
-	@stream 処理の対象のWFILEのポインタ
+	@wmfp 処理の対象のWFILEのポインタ
 */
-static void setColorFromOft(png_byte val, WFILE *stream)
+static void setColorFromOft(png_byte val, WFILE *wmfp)
 {
 	png_byte *row, *ptr;
 
-	row = stream->specs.row_pointers[stream->offset.y];
+	row = wmfp->sspecs.row_pointers[wmfp->offset.y];
 
-	ptr = &(row[stream->offset.x * 4]);
+	//row = &wmfp->sspecs.row_pointers[wmfp->offset.y];
 
-	ptr[stream->offset.color] = val;
+	ptr = &(row[wmfp->offset.x * 4]);
+
+	ptr[wmfp->offset.color] = val;
 }
 
 /*
-	stream->offsetを1ドット分だけ進める関数
+	wmfp->offsetを1ドット分だけ進める関数
 	return 成功:0 失敗:-1
 */
-static int wseek_dot(WFILE *stream)
+static int wseek_dot(WFILE *wmfp)
 {
 	/* oftを更新（座標、色、ビットプレーンの番号） */
-	if(stream->offset.color == COLOR_ALPHA){	/* RGBAの最後のカラーだったら */
-		if(stream->offset.x == stream->specs.x_size - 1){	/* ビットプレーンの横軸のMAXまでいっていたら */
-			if(stream->offset.y == stream->specs.y_size -1){	/* ビットプレーンの最後までいっていたら */
-				stream->offset.y = 0;
-				stream->offset.x = 0;
+	if(wmfp->offset.color == COLOR_ALPHA){	/* RGBAの最後のカラーだったら */
+		if(wmfp->offset.x == wmfp->sspecs.x_size - 1){	/* ビットプレーンの横軸のMAXまでいっていたら */
+			if(wmfp->offset.y == wmfp->sspecs.y_size -1){	/* ビットプレーンの最後までいっていたら */
+				wmfp->offset.y = 0;
+				wmfp->offset.x = 0;
 
-				if(stream->offset.plane_no == 7){
+				if(wmfp->offset.plane_no == 7){
 #ifdef DEBUG
-					printOffset(&stream->offset);
+					printOffset(&wmfp->offset);
 					puts("wseek_dot:watermark size over-flowed");
 #endif
 					return -1;	/* 画像に埋め込める上限を越えたときは考慮されていない */
 				}
 				else{
-					stream->offset.plane_no++;
+					wmfp->offset.plane_no++;
 				}
 			}
 			else{
-				stream->offset.x = 0;
-				stream->offset.y++;
+				wmfp->offset.x = 0;
+				wmfp->offset.y++;
 			}
 		}
 		else{
-			stream->offset.x++;
+			wmfp->offset.x++;
 		}
-		stream->offset.color = COLOR_RED;
+		wmfp->offset.color = COLOR_RED;
 	}
 	else{	/* ピクセル内で色を変えるだけ(ピクセル位置は変えない) */
-		stream->offset.color++;
+		wmfp->offset.color++;
 	}
 
 	return 0;
@@ -115,42 +119,42 @@ static int wseek_dot(WFILE *stream)
 
 /*
 	WFILEからビットストリームで1バイト読み込み、埋め込まれている透かしを返す関数
-	@stream 処理するWFILEエントリ
+	@wmfp 処理するWFILEエントリ
 	@return 成功：透かし1バイトの内容 失敗：-1
 */
-static char wread_byte(WFILE *stream)
+static char wread_byte(WFILE *wmfp)
 {
 	int i, bit;
 	png_byte color;
 	char result = -1;	/* 透かしは文字なのでcharでいい(asciiコードにマイナスの値は無い) */
 
-	if((stream->bs = openBitStream(NULL, 1, "w")) == NULL){	/* 書き込みモードでビットストリームをopen */
-		puts("wread_byte:cannot open bitstream");
+	if((wmfp->bs = openBitStream(NULL, 1, "w")) == NULL){	/* 書き込みモードでビットストリームをopen */
+		puts("wread_byte:cannot open bitwmfp");
 		return result;
 	}
 
 	for(i = 0; i < 8; i++){	/* 8ドット分ループ */
-		color = getColorFromOft(stream);	/* ドットの値はunsigend char(0 - 255) */
-		bit = pick_nbit8(color, stream->offset.plane_no);
+		color = getColorFromOft(wmfp);	/* ドットの値はunsigend char(0 - 255) */
+		bit = pick_nbit8(color, wmfp->offset.plane_no);
 #ifdef DEBUG
-		printOffset(&stream->offset);
+		printOffset(&wmfp->offset);
 		printf("bit:%d, color:%d\n", bit, color);
 #endif
 
 		/* ビットストリームに書き込む */
-		writeBitStream(stream->bs, bit);
+		writeBitStream(wmfp->bs, bit);
 		/* 1 dot分だけオフセットを進める */
-		wseek_dot(stream);
+		wseek_dot(wmfp);
 
 	}
 
 #ifdef DEBUG
-	//printf("%d 0x%02x ", *(char *)stream->bs->raw_data, *(char *)stream->bs->raw_data);	/* 読み出す時は透かし(== ascii)なのでchar変数として読み出し */
+	//printf("%d 0x%02x ", *(char *)wmfp->bs->raw_data, *(char *)wmfp->bs->raw_data);	/* 読み出す時は透かし(== ascii)なのでchar変数として読み出し */
 #endif
 
-	memcpy(&result, (char *)stream->bs->raw_data, 1);
+	memcpy(&result, (char *)wmfp->bs->raw_data, 1);
 
-	closeBitStream(stream->bs);	/* ビットストリームをclose */
+	closeBitStream(wmfp->bs);	/* ビットストリームをclose */
 
 	printf("result = %d(%c)\n", result, result);
 
@@ -158,48 +162,95 @@ static char wread_byte(WFILE *stream)
 }
 
 /*
-	valの内容をstream->imgに埋め込む
+	valの内容をwmfp->imgに埋め込む
 	@val 透かしとして埋め込むバイトの内容
-	@stream 処理対象のWFILEのアドレス
+	@wmfp 処理対象のWFILEのアドレス
 */
-static void wwrite_byte(char val, WFILE *stream)
+static void wwrite_byte(char val, WFILE *wmfp)
 {
 	int i, bit;
 	png_byte color;
 
-	stream->bs = openBitStream(&val, 1, "r");	/* valをもとにビットストリームを作成 */
+	wmfp->bs = openBitStream(&val, 1, "r");	/* valをもとにビットストリームを作成 */
 
 	for(i = 0; i < 8; i ++){	/* 8ドット分ループ */
-		color = getColorFromOft(stream);	/* 処理すべきバイトを取得する */
+		color = getColorFromOft(wmfp);	/* 処理すべきバイトを取得する */
 
-		bit = readBitStream(stream->bs);
+		bit = readBitStream(wmfp->bs);
 
 		if(bit == 1){
-			set_nbit8((unsigned char *)&color, stream->offset.plane_no);
+			set_nbit8((unsigned char *)&color, wmfp->offset.plane_no);
 		}
 		else if(bit == 0){
-			clr_nbit8((unsigned char *)&color, stream->offset.plane_no);
+			clr_nbit8((unsigned char *)&color, wmfp->offset.plane_no);
 		}
 
 #ifdef DEBUG
 		//print_binary8(color);
-		//printOffset(&stream->offset);
+		//printOffset(&wmfp->offset);
 		//printf("bit:%d, color:%d\n", bit, color);
 #endif
 
-		setColorFromOft(color, stream);
+		setColorFromOft(color, wmfp);	/* ここでrow_pointersに格納 */
 
 		/* 1 dot分だけオフセットを進める */
-		wseek_dot(stream);
+		wseek_dot(wmfp);
 	}
 
-	closeBitStream(stream->bs);
+	closeBitStream(wmfp->bs);
 }
 
 #if 1
 /*
+	１行分のデータをwmfp->sspecs.row_pointersから読み込む関数
+	@wmfp 対象のWFILEのアドレス
+	@ptr 読み込んだ結果を格納するバッファ
+	@size ptrへ格納するバイトサイズ
+*/
+void wread_row(WFILE *wmfp, void *ptr, size_t size)
+{
+	int i;
+
+#ifdef DEBUG
+	printf("Notice, End line size = %lu\n", size);	/* size < row_bytesだった時 */
+#endif
+
+	png_read_row(wmfp->r_cspecs.png_ptr, wmfp->sspecs.row_pointer, NULL);	/* 画像から1行分のデータをrow_pointerに読み込む */
+
+	for(i = 0; i < size; i++){
+		wread_byte(*(char *)(ptr + i), wmfp);	/* この中でshared_specsのrow_pointersに書き込んでいるのでローカルのpng_pointerに書き込む用にする */
+	}
+}
+
+/*
+	１行分のデータをwmfp->sspecs.row_pointersに書き込む関数
+	@wmfp 対象のWFILEのアドレス
+	@ptr 1行分のバイトデータ
+	@size ptrからフェッチするサイズ
+*/
+void wwrite_row(WFILE *wmfp, void *ptr, size_t size)
+{
+	int i;
+
+#ifdef DEBUG
+	printf("Notice, End line size = %lu\n", size);	/* size < row_bytesだった時 */
+#endif
+
+	png_read_row(wmfp->r_cspecs.png_ptr, wmfp->sspecs.row_pointer, NULL);	/* 画像から1行分のデータをrow_pointerに読み込む */
+
+	for(i = 0; i < size; i++){
+		wwrite_byte(*(char *)(ptr + i), wmfp);	/* この中でshared_specsのrow_pointersに書き込んでいるのでローカルのpng_pointerに書き込む用にする */
+	}
+
+	png_write_row(wmfp->w_cspecs.png_ptr, wmfp->sspecs.row_pointer);	
+}
+#endif
+
+
+#if 1
+/*
 	PNGのテキストチャンクからオフセットを読み込み、offsetにセットする関数
-	@specs 読み取るPNG-specs
+	@sspecs 読み取るPNG-sspecs
 	@offset セットするwoff_t
 */
 static void getOffsetFromChunk(woff_t *offset, png_structp png_ptr, png_infop info_ptr)
@@ -244,7 +295,7 @@ static void getOffsetFromChunk(woff_t *offset, png_structp png_ptr, png_infop in
 
 /*
 	offsetを文字列化してPNGのテキストチャンクに埋め込む関数
-	@specs セットするPNG-specs
+	@sspecs セットするPNG-sspecs
 	@offset 埋め込むwoff_t
 */
 static void setOffsetToChunk(const woff_t *offset, png_structp png_ptr, png_infop info_ptr)
@@ -272,12 +323,115 @@ static void setOffsetToChunk(const woff_t *offset, png_structp png_ptr, png_info
 }
 #endif
 
-#define SIG_CHECK_SIZE	8	/* PNGシグネチャをチェックするバイト数（4〜8） */
+#define SIG_CHECK_SIZE	8	/* PNGシグネチャをチェックするバイト数（4?8） */
 
 /*
-	ファイルからspecsを作る関数
+	読み込み用のpng_control_specsを設定する関数
+	@fname ファイル名
+	@r_specs 設定するpng_control_specsのアドレス
+*/
+static void createReadCspecs(const char *fname, struct png_control_specs *cspecs)
+{
+	char header[SIG_CHECK_SIZE];    // 8 is the maximum size that can be checked
+	int interlace_method, compression_method, filter_method;
+	/* open file and test for it being a png */
+
+	cspecs->fp = fopen(fname, "rb");
+
+	if(cspecs->fp == NULL){
+		printf("[readPngFile] File %s could not be opened for reading\n", fname);
+	}
+
+	fread(header, 1, SIG_CHECK_SIZE, cspecs->fp);
+
+	if(png_sig_cmp((png_bytep)header, 0, SIG_CHECK_SIZE)){
+		printf("[readPngFile] File %s is not recognized as a PNG file\n", fname);
+	}
+
+	/* 構造体の初期化 */
+	cspecs->png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+
+	if(cspecs->png_ptr == NULL){	/* エラー処理 */
+		puts("[readPngFile] png_create_read_struct failed");
+	}
+
+	cspecs->info_ptr = png_create_info_struct(cspecs->png_ptr);
+
+	if(cspecs->info_ptr == NULL){	/* エラー処理 */
+		puts("[readPngFile] png_create_info_struct failed");
+	}
+
+	if(setjmp(png_jmpbuf(cspecs->png_ptr))){
+		puts("[readPngFile] Error during init_io");
+	}
+
+	png_init_io(cspecs->png_ptr, cspecs->fp);
+	png_set_sig_bytes(cspecs->png_ptr, SIG_CHECK_SIZE);
+
+	png_read_info(cspecs->png_ptr, cspecs->info_ptr);
+
+	/* 行バイト数、縦横サイズ、ビット深度、カラータイプなど取得 */
+	cspecs->shared_specs->row_bytes = png_get_rowbytes(cspecs->png_ptr, cspecs->info_ptr);
+
+	png_get_IHDR(cspecs->png_ptr, cspecs->info_ptr, &cspecs->shared_specs->x_size, &cspecs->shared_specs->y_size,
+			&cspecs->shared_specs->bit_depth, &cspecs->shared_specs->color_type,
+			&interlace_method, &compression_method, &filter_method);
+
+	if(interlace_method){	/* インターレース方式を採用した画像は対象外 */
+		puts("interlace is valid, not supported");
+		return;
+	}
+
+	/* compression_method, filter_methodは使わない */
+}
+
+/*
+	書き込み用のpng_control_specsを設定する関数
+	@fname ファイル名
+	@w_specs 設定するpng_control_specsのアドレス
+*/
+static void createWriteCspecs(const char *fname, struct png_control_specs *cspecs)
+{
+	/* open file and test for it being a png */
+
+	cspecs->fp = fopen(fname, "wb");
+
+	if(cspecs->fp == NULL){
+		printf("[readPngFile] File %s could not be opened for reading\n", fname);
+	}
+
+	/* 構造体の初期化 */
+	cspecs->png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+
+	if(cspecs->png_ptr == NULL){	/* エラー処理 */
+		puts("[readPngFile] png_create_read_struct failed");
+	}
+
+	cspecs->info_ptr = png_create_info_struct(cspecs->png_ptr);
+
+	if(cspecs->info_ptr == NULL){	/* エラー処理 */
+		puts("[readPngFile] png_create_info_struct failed");
+	}
+
+	png_init_io(cspecs->png_ptr, cspecs->fp);
+
+	if(setjmp(png_jmpbuf(cspecs->png_ptr))){
+		puts("[readPngFile] Error during init_io");
+	}
+
+	/* ヘッダに書き込む */
+	png_set_IHDR(cspecs->png_ptr, cspecs->info_ptr,
+			cspecs->shared_specs->x_size, cspecs->shared_specs->y_size,
+			cspecs->shared_specs->bit_depth, cspecs->shared_specs->color_type,
+			PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_BASE, PNG_FILTER_TYPE_BASE);
+
+	png_write_info(cspecs->png_ptr, cspecs->info_ptr);
+}
+
+/*
+	ファイルからsspecsを作る関数
 	@fname 読み込むファイルのパス
-	@specs 格納先のアドレス
+	@wmfp 扱っているWMFILEのアドレス
 */
 static void readPngFile(const char *fname, WFILE *wmfp)
 {
@@ -335,8 +489,8 @@ static void readPngFile(const char *fname, WFILE *wmfp)
 	}
 
 	/* 縦横サイズ、ビット深度、カラータイプなど取得 */
-	png_get_IHDR(png_ptr, info_ptr, &wmfp->specs.x_size, &wmfp->specs.y_size, &wmfp->specs.bit_depth,
-			&wmfp->specs.color_type, &interlace_method, &compression_method, &filter_method);
+	png_get_IHDR(png_ptr, info_ptr, &wmfp->sspecs.x_size, &wmfp->sspecs.y_size, &wmfp->sspecs.bit_depth,
+			&wmfp->sspecs.color_type, &interlace_method, &compression_method, &filter_method);
 
 	if(interlace_method){	/* インターレース方式を採用した画像は対象外 */
 		puts("interlace is valid, not supported");
@@ -345,19 +499,17 @@ static void readPngFile(const char *fname, WFILE *wmfp)
 
 #ifdef DEBUG
 	printf("x:%lu, y:%lu, bit_depth:%d, color_type:%d, interlace:%d, compression:%d, filter:%d\n"
-		,wmfp->specs.x_size, wmfp->specs.y_size, wmfp->specs.bit_depth, wmfp->specs.color_type,
+		,wmfp->sspecs.x_size, wmfp->sspecs.y_size, wmfp->sspecs.bit_depth, wmfp->sspecs.color_type,
 		interlace_method, compression_method, filter_method);
 #endif
 
-	wmfp->specs.row_pointers = (png_bytep *)malloc(sizeof(png_bytep) * wmfp->specs.y_size);
-
-	//allocRowPtrs(wmfp);
+	wmfp->sspecs.row_pointers = (png_bytep *)malloc(sizeof(png_bytep) * wmfp->sspecs.y_size);
 
 	/* メモリを確保 これで列単位でアクセスできるようになる */
-	for(i = 0; i < wmfp->specs.y_size; i++){
-		wmfp->specs.row_pointers[i] = (png_byte *)malloc(png_get_rowbytes(png_ptr, info_ptr));
+	for(i = 0; i < wmfp->sspecs.y_size; i++){
+		wmfp->sspecs.row_pointers[i] = (png_byte *)malloc(png_get_rowbytes(png_ptr, info_ptr));
 
-		if(wmfp->specs.row_pointers[i] == NULL){
+		if(wmfp->sspecs.row_pointers[i] == NULL){
 			puts("malloc err");
 		}
 	}
@@ -367,8 +519,8 @@ static void readPngFile(const char *fname, WFILE *wmfp)
 		puts("[readPngFile] Error during read_image");
 	}
 
-	for(i = 0; i < wmfp->specs.y_size; i++){
-		png_read_rows(png_ptr, &wmfp->specs.row_pointers[i], NULL, 1);
+	for(i = 0; i < wmfp->sspecs.y_size; i++){
+		png_read_row(png_ptr, wmfp->sspecs.row_pointers[i], NULL);
 	}
 
 	printf("offset_x:%lu, offset_y:%lu\n",  png_get_x_offset_pixels(png_ptr, info_ptr),  png_get_y_offset_pixels(png_ptr, info_ptr));
@@ -384,7 +536,7 @@ static void readPngFile(const char *fname, WFILE *wmfp)
 static void writePngFile(WFILE *wmfp)
 {
 	int i;
-	struct png_operation_specs *specs = &wmfp->specs;
+	struct png_shared_specs *sspecs = &wmfp->sspecs;
 	png_structp png_ptr;		/* PNG管理用構造体 */
 	png_infop info_ptr;		/* PNG管理用構造体 */
 
@@ -401,10 +553,6 @@ static void writePngFile(WFILE *wmfp)
 		puts("[write_png_file] png_create_info_struct failed");
 	}
 
-	if(setjmp(png_jmpbuf(png_ptr))){
-		puts("[write_png_file] Error during init_io");
-	}
-
 	png_init_io(png_ptr, wmfp->out_fp);
 
 	/* ヘッダを書き込む */
@@ -412,8 +560,8 @@ static void writePngFile(WFILE *wmfp)
 		puts("[writePngFile] Error during writing header");
 	}
 
-	png_set_IHDR(png_ptr, info_ptr, specs->x_size, specs->y_size,
-		specs->bit_depth, specs->color_type, PNG_INTERLACE_NONE,
+	png_set_IHDR(png_ptr, info_ptr, sspecs->x_size, sspecs->y_size,
+		sspecs->bit_depth, sspecs->color_type, PNG_INTERLACE_NONE,
 		PNG_COMPRESSION_TYPE_BASE, PNG_FILTER_TYPE_BASE);
 
 	/* オフセットを書き込む */
@@ -421,14 +569,10 @@ static void writePngFile(WFILE *wmfp)
 
 	png_write_info(png_ptr, info_ptr);
 
-	if(setjmp(png_jmpbuf(png_ptr))){
-		puts("[writePngFile] Error during writing bytes");
-	}
+	//png_write_image(png_ptr, sspecs->row_pointers);
 
-	//png_write_image(png_ptr, specs->row_pointers);
-
-	for(i = 0; i < specs->y_size; i++){
-		png_write_row(png_ptr, specs->row_pointers[i]);
+	for(i = 0; i < sspecs->y_size; i++){
+		png_write_row(png_ptr, sspecs->row_pointers[i]);
 	}
 
 	puts("write complete");
@@ -445,10 +589,23 @@ static void writePngFile(WFILE *wmfp)
 
 /*
 	wopen()で渡されたファイル名とモードに基づいてPNGのイメージを作成する関数
-	@stream 対象のWFILEのアドレス
+	@wmfp 対象のWFILEのアドレス
 */
 static void openImageByMode(WFILE *wmfp)
 {
+	size_t len;
+	char *hidden_path;	/* 隠しファイル */
+
+	len = strlen(wmfp->path) + 1 + 1;	/* "." + "\0" */
+
+	hidden_path = (char *)malloc(len);
+
+	sprintf(hidden_path, ".%s", wmfp->path);	/* 隠しファイルのパスを生成 */
+
+#ifdef DEBUG
+	printf("hidden_path:%s\n", hidden_path);
+#endif
+
 	/* ファイル一つにつきreadPngFile１回 */
 
 	if(access(wmfp->path, F_OK) == 0){	/* ファイルが存在する場合 */
@@ -494,6 +651,7 @@ static void openImageByMode(WFILE *wmfp)
 		}
 	}
 
+	free(hidden_path);
 	free(wmfp->path);	/* wopen()でmallocした分 */
 }
 
@@ -512,10 +670,12 @@ WFILE *wopen(const char *path, const char *str)
 	WFILE *wmfp = NULL;
 	size_t len;
 
-
 	if((wmfp = malloc(sizeof(WFILE))) == NULL){
 		return NULL;
 	}
+
+	wmfp->r_cspecs.shared_specs = &wmfp->sspecs;
+	wmfp->w_cspecs.shared_specs = &wmfp->sspecs;
 
 	len = sizeof(char) * (strlen(path) + 1);	/* strlen(3)は終端文字分を計算しないので+1 */
 
@@ -555,21 +715,21 @@ WFILE *wopen(const char *path, const char *str)
 	@size 読み込むサイズ（バイト）
 	return 実際に読み込めたデータのバイト数
 */
-size_t wread(void *ptr, size_t size, WFILE *stream)
+size_t wread(void *ptr, size_t size, WFILE *wmfp)
 {
 	int i;
 	char result;
 	char *buf = (char *)ptr;
 	size_t ret = 0;
 
-	stream->size = size;
+	wmfp->size = size;
 
-	openImageByMode(stream);
+	//wmfp->sspecs.row_pointer = (png_byte *)malloc(wmfp->sspecs.row_bytes);
 
-	//allocateRows(stream, size);
+	openImageByMode(wmfp);
 
 	for(i = 0; i < size; i++){	/* バイトごとにループを回す */
-		if((result = wread_byte(stream)) == -1){
+		if((result = wread_byte(wmfp)) == -1){
 #ifdef DEBUG
 			printf("result:%d, %d byte read\n", result, i);
 #endif
@@ -585,19 +745,18 @@ size_t wread(void *ptr, size_t size, WFILE *stream)
 }
 
 /*
-	prtからsizeバイトのデータをstreamに書込む関数
+	prtからsizeバイトのデータをwmfpに書込む関数
 	return 実際に書き込めたデータの個数
 */
-size_t wwrite(const void *ptr, size_t size, WFILE *stream)
+size_t wwrite(const void *ptr, size_t size, WFILE *wmfp)
 {
 	int i;
 	size_t ret = 0;
 
-	openImageByMode(stream);
-	//allocateRows(stream, size);
+	openImageByMode(wmfp);
 
 	for(i = 0; i < size; i++){
-		wwrite_byte(*(char *)(ptr + i), stream);
+		wwrite_byte(*(char *)(ptr + i), wmfp);
 		ret++;
 	}
 
@@ -606,26 +765,37 @@ size_t wwrite(const void *ptr, size_t size, WFILE *stream)
 
 /*
 	WFILEのエントリのメモリデータを解放する関数
-	@stream 
+	@wmfp 
 */
-void wclose(WFILE *stream)
+void wclose(WFILE *wmfp)
 {
 	int y;
 
-	if(stream->mode.split.can_write){	/* 書込み許可なモードだとout_fpがオープンされている */
-		writePngFile(stream);
+#if 0
+	if(wmfp->r_cspecs.fp){
+		fclose(wmfp->r_cspecs.fp);
+	}
+	if(wmfp->w_cspecs.fp){
+		fclose(wmfp->w_cspecs.fp);
+	}
 
-		if(stream->out_fp){
-			fclose(stream->out_fp);
+	free(wmfp->sspecs.row_pointer);
+#endif
+
+	if(wmfp->mode.split.can_write){	/* 書込み許可なモードだとout_fpがオープンされている */
+		writePngFile(wmfp);
+
+		if(wmfp->out_fp){
+			fclose(wmfp->out_fp);
 		}
 	}
 
-	/* specs内のメモリの解放 */
-	for(y = 0; y < stream->specs.y_size; y++){
-		free(stream->specs.row_pointers[y]);
+	/* sspecs内のメモリの解放 */
+	for(y = 0; y < wmfp->sspecs.y_size; y++){
+		free(wmfp->sspecs.row_pointers[y]);
 	}
 
-	free(stream->specs.row_pointers);
-	free(stream);
+	free(wmfp->sspecs.row_pointers);
+	free(wmfp);
 }
 

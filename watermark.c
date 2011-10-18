@@ -6,7 +6,7 @@
 #include "wfile.h"
 
 
-#define WORD_FILE	"./words/love_addict.txt"
+#define WORD_FILE	"./words/obama.txt"
 
 /*
 	pathのファイルに書かれているテキストのバイト数を返す関数
