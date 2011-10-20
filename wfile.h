@@ -36,7 +36,6 @@ struct png_shared_specs{
 	int bit_depth;		/* ビット深度 */
 
 	png_bytep row_pointer;
-	png_bytep *row_pointers;
 };
 
 /* 管理用のPNGデータ構造 */
@@ -51,14 +50,11 @@ struct png_control_specs{
 
 typedef struct {
 	char *path;	/* ファイル名 */
-	size_t size;	/* wopenで渡されるsize */
 
 	struct png_shared_specs sspecs;	/* 画像管理用構造体 */
 	struct png_control_specs r_cspecs, w_cspecs;	/* 読み込み用と書き込み用のcspecs */
 
 	wfile_mode_t mode;
-
-	FILE *out_fp;				/* wcloseで書き出す際のFILEが格納される */
 
 	woff_t	offset;			/* オフセット */
 	BSTREAM *bs;				/* ここからシーケンシャルに入出力 */
