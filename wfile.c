@@ -606,20 +606,20 @@ size_t wread(void *ptr, size_t size, WFILE *wmfp)
 }
 
 /*
-	sizeから最終的に画像のどの部分まで透かしが入るか計算してoffsetに格納する関数
+	sizeから最終的に画像のどの部分まで透かしが入るか計算してnew_offsetに格納する関数
 	@wmfp 対象のWFILEのアドレス
-	@offset 格納先のwoff_t変数
+	@new_offset 新しく計算した結果が格納される変数
+	@old_offset 現在のオフセット
 	@size wread()が渡されたsize
 */
 static void calcOffset(const WFILE *wmfp, woff_t *new_offset, woff_t *old_offset, size_t size)
 {
-	//int row_writable_bytes;
 	int plane_bit_total, old_bit_offset, new_bit_offset;
 	int new_offset_odd;
 
 	plane_bit_total = wmfp->sspecs.x_size * wmfp->sspecs.y_size * 4;	/* 1ビットプレーン何ビット入るか */
-	old_bit_offset = plane_bit_total * old_offset->plane_no + (old_offset->y * wmfp->sspecs.x_size * 4) + old_offset->x * 4;
 
+	old_bit_offset = plane_bit_total * old_offset->plane_no + (old_offset->y * wmfp->sspecs.x_size * 4) + old_offset->x * 4;
 	new_bit_offset = old_bit_offset + size * 8;
 
 #ifdef DEBUG
@@ -629,17 +629,13 @@ static void calcOffset(const WFILE *wmfp, woff_t *new_offset, woff_t *old_offset
 	printf("new_bit_offset:%d\n", new_bit_offset);
 #endif
 
-	//row_writable_bytes = wmfp->sspecs.row_bytes / 8;				/* 画像横１行に透かしが何バイト入るか */
-
-	//new_offset->x = size % row_writable_bytes * 2;
-	//new_offset->y = size / row_writable_bytes;
 	new_offset->plane_no = new_bit_offset / plane_bit_total;
 
 	new_offset_odd = new_bit_offset % plane_bit_total;
 
 	new_offset->color = 0;	/* ALPHAチャンネルありの場合4ドットなので */
 	new_offset->y = new_offset_odd / (wmfp->sspecs.x_size * 4);
-	new_offset->x = (new_offset_odd % (wmfp->sspecs.x_size * 4)) / 4;
+	new_offset->x = (new_offset_odd % (wmfp->sspecs.x_size * 4)) / 4;	/* 1ピクセル4ドットなので最後に4で割る */
 }
 
 /*
@@ -658,7 +654,7 @@ size_t wwrite(const void *ptr, size_t size, WFILE *wmfp)
 	/*	row_even:	1行あたりに埋め込める透かしのバイト数
 		row_odd:	1行では埋め込めない透かしのバイト数	*/
 
-	openImageByMode(wmfp);
+	openImageByMode(wmfp);	/* r_cspecsとw_cspecsを準備する */
 
 	/* offsetの設定 */
 	if(wmfp->mode.split.write_pos_end){	/* 追記モードだったら画像からオフセットを設定 */
@@ -670,9 +666,6 @@ size_t wwrite(const void *ptr, size_t size, WFILE *wmfp)
 		wmfp->offset.y = 0;
 		wmfp->offset.color = 0;
 	}
-
-	/* row_pointerのメモリ確保 */
-	wmfp->sspecs.row_pointer = (png_byte *)malloc(wmfp->sspecs.row_bytes);
 
 	row_writable_bytes = wmfp->sspecs.row_bytes / 8;
 	row_even = size / row_writable_bytes;	
@@ -686,6 +679,12 @@ size_t wwrite(const void *ptr, size_t size, WFILE *wmfp)
 #ifdef DEBUG
 	printf("even:%d, odd:%d\n", row_even, row_odd);
 #endif
+
+	/* row_pointerのメモリ確保 */
+	wmfp->sspecs.row_pointer = (png_byte *)malloc(wmfp->sspecs.row_bytes);
+
+
+	/* ここにiの初期化コードを追加（現在のオフセットからどの行から書き込みを開始するべきかを決める） */
 
 	for(i = 0; i < row_even; i++){
 		buf += wwrite_row(wmfp, buf, row_writable_bytes);
