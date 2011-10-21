@@ -24,6 +24,7 @@ typedef union wfile_mode{	/* wopen()のモードを表す構造体 */
 }wfile_mode_t;
 
 typedef struct {	/* 次に画像中のどのピクセルを処理するか（カレントオフセット） */
+	int total_bit;	/* どこまで透かしが書き込まれているか（ビット数） */
 	int plane_no;
 	int x, y, color;	/* ピクセルの座標＋色（RED:0, GREEN:1, BLUE:2） */
 }woff_t;

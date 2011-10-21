@@ -14,10 +14,7 @@
 
 /*
 	TODO
-	画像のデータ分一気にメモリを確保するのではなく、渡されたデータ分だけ行を確保する
-	画像中のあるrowだけ変更して書き込みは無理だった。
-		行ごとに書き込めば？
-		write_rowとかの関数を作って、wread()のsizeでループ
+	オフセットを単純なビット数とする
 	
 */
 
@@ -35,7 +32,7 @@
 */
 void printOffset(const woff_t *oft)
 {
-	printf("[plane_no:%d (x:%d, y:%d), color:%d]\n", oft->plane_no, oft->x, oft->y, oft->color);
+	printf("[total_bit:%d plane_no:%d (x:%d, y:%d), color:%d]\n", oft->total_bit, oft->plane_no, oft->x, oft->y, oft->color);
 }
 #endif
 
@@ -61,23 +58,37 @@ static void setColorFromOft(png_byte val, WFILE *wmfp)
 }
 
 /*
+	offsetに画像の位置オフセットを格納する関数。offset->total_bitが適切に設定されている必要がある
+	@offset 格納するoffset変数
+*/
+static void calcPixelOffset(woff_t *offset, const struct png_control_specs *cspecs)
+{
+	int plane_bit_total, offset_odd;
+	struct png_shared_specs *sspecs;
+
+	sspecs = cspecs->shared_specs;
+
+	plane_bit_total = sspecs->x_size * sspecs->y_size * 4;	/* 1ビットプレーン何ビット入るか */
+	offset_odd = offset->total_bit % plane_bit_total;
+
+	offset->plane_no = offset->total_bit / plane_bit_total;
+	offset->y = offset_odd / (sspecs->x_size * 4);
+	offset->x = (offset_odd % (sspecs->x_size * 4)) / 4;	/* 1ピクセル4ドットなので最後に4で割る */
+	offset->color = COLOR_RED;
+}
+
+/*
 	PNGのテキストチャンクからオフセットを読み込み、offsetにセットする関数
-	@sspecs 読み取るPNG-sspecs
+	@cspecs テキストチャンクにアクセスするために必要
 	@offset セットするwoff_t
 */
-static void getOffsetFromChunk(woff_t *offset, png_structp png_ptr, png_infop info_ptr)
+static void getOffsetFromChunk(woff_t *offset, struct png_control_specs *cspecs)
 {
 	png_textp text_ptr;
-	char *tp, buf[32];
 	int num_comments, num_text;
 
 	/* コメントの取得 */
-	num_comments = png_get_text(png_ptr, info_ptr, &text_ptr, &num_text);
-
-	/*
-	*	テキストチャンクに埋め込まれるオフセットデータは
-	*	「plane_no,x,y,color」の形式
-	*/
+	num_comments = png_get_text(cspecs->png_ptr, cspecs->info_ptr, &text_ptr, &num_text);
 
 	if(num_comments == 0){
 		return;
@@ -90,43 +101,35 @@ static void getOffsetFromChunk(woff_t *offset, png_structp png_ptr, png_infop in
 	printf("[text body]\n%s\n", text_ptr->text);
 #endif
 
-	strncpy(buf, text_ptr->text, 32);
+	offset->total_bit = atoi(text_ptr->text);
 
-	tp = strtok(buf, ",");
-	offset->plane_no = atoi(tp);
-
-	tp = strtok(NULL, ",");
-	offset->x = atoi(tp);
-
-	tp = strtok(NULL, ",");
-	offset->y = atoi(tp);
-
-	tp = strtok(NULL, ",");
-	offset->color = atoi(tp);
+	calcPixelOffset(offset, cspecs);	/* plane_no, x, y, colorを計算する */
 }
 
 /*
 	offsetを文字列化してPNGのテキストチャンクに埋め込む関数
-	@sspecs セットするPNG-sspecs
 	@offset 埋め込むwoff_t
+	@cspecs テキストチャンクにアクセスするために必要
 */
-static void setOffsetToChunk(const woff_t *offset, png_structp png_ptr, png_infop info_ptr)
+static void setOffsetToChunk(const woff_t *offset, struct png_control_specs *cspecs)
 {
 	png_textp text_ptr;
 	char buf[32];
 
+	/* メモリの確保 */
 	text_ptr = (png_text *)malloc(sizeof(png_text));
 
 	text_ptr->compression = PNG_TEXT_COMPRESSION_NONE;
 	text_ptr->key = (char *)malloc(sizeof(char) * 16);
 	text_ptr->text = (char *)malloc(sizeof(char) * 32);
 
-	sprintf(buf, "%d,%d,%d,%d", offset->plane_no, offset->x, offset->y, offset->color);
+	/* オフセットは書き込んであるビット数だけ */
+	sprintf(buf, "%d", offset->total_bit);
 
 	strcpy(text_ptr->key, "WaterMark offset");
 	strcpy(text_ptr->text, buf);
 
-	png_set_text(png_ptr, info_ptr, text_ptr, 1);
+	png_set_text(cspecs->png_ptr, cspecs->info_ptr, text_ptr, 1);
 
 #ifdef DEBUG
 	puts("The offset wrote");
@@ -145,37 +148,43 @@ static void setOffsetToChunk(const woff_t *offset, png_structp png_ptr, png_info
 */
 static int wseek_dot(WFILE *wmfp)
 {
-	/* oftを更新（座標、色、ビットプレーンの番号） */
-	if(wmfp->offset.color == COLOR_ALPHA){	/* RGBAの最後のカラーだったら */
-		if(wmfp->offset.x == wmfp->sspecs.x_size - 1){	/* ビットプレーンの横軸のMAXまでいっていたら */
-			if(wmfp->offset.y == wmfp->sspecs.y_size -1){	/* ビットプレーンの最後までいっていたら */
-				wmfp->offset.y = 0;
-				wmfp->offset.x = 0;
+	woff_t *offset;
 
-				if(wmfp->offset.plane_no == 7){
+	offset = &wmfp->offset;
+
+	/* oftを更新（座標、色、ビットプレーンの番号） */
+	if(offset->color == COLOR_ALPHA){	/* RGBAの最後のカラーだったら */
+		if(offset->x == wmfp->sspecs.x_size - 1){	/* ビットプレーンの横軸のMAXまでいっていたら */
+			if(offset->y == wmfp->sspecs.y_size -1){	/* ビットプレーンの最後までいっていたら */
+				offset->y = 0;
+				offset->x = 0;
+
+				if(offset->plane_no == 7){
 #ifdef DEBUG
-					printOffset(&wmfp->offset);
+					printOffset(offset);
 					puts("wseek_dot:watermark size over-flowed");
 #endif
 					return -1;	/* 画像に埋め込める上限を越えたときは考慮されていない */
 				}
 				else{
-					wmfp->offset.plane_no++;
+					offset->plane_no++;
 				}
 			}
 			else{
-				wmfp->offset.x = 0;
-				wmfp->offset.y++;
+				offset->x = 0;
+				offset->y++;
 			}
 		}
 		else{
-			wmfp->offset.x++;
+			offset->x++;
 		}
-		wmfp->offset.color = COLOR_RED;
+		offset->color = COLOR_RED;
 	}
 	else{	/* ピクセル内で色を変えるだけ(ピクセル位置は変えない) */
-		wmfp->offset.color++;
+		offset->color++;
 	}
+
+	offset->total_bit++;
 
 	return 0;
 }
@@ -507,9 +516,35 @@ static void openImageByMode(WFILE *wmfp)
 		}
 	}
 
-
 	free(hidden_path);
 }
+
+/*
+	書き込みのためのオフセット（wmfp内）の設定と未来のオフセットを計算し、画像に書き込む関数
+	@wmfp 対象のWFILEのアドレス
+	@size 書き込むサイズ(wwrite()の引数)
+*/
+static void setOffset(WFILE *wmfp, size_t size)
+{
+	woff_t offset;
+
+	memset(&offset, 0, sizeof(woff_t));
+
+	/* offsetの設定 */
+	if(wmfp->mode.split.write_pos_end){	/* 追記モードだったら画像からオフセットを設定 */
+		getOffsetFromChunk(&wmfp->offset, &wmfp->r_cspecs);
+	}
+	else{
+		memset(&wmfp->offset, 0, sizeof(woff_t));
+	}
+
+	offset.total_bit = wmfp->offset.total_bit + size * 8;
+	calcPixelOffset(&offset, &wmfp->w_cspecs);
+
+	setOffsetToChunk(&offset, &wmfp->w_cspecs);	/* オフセットを画像本体に書き込む */
+	png_write_info(wmfp->w_cspecs.png_ptr, wmfp->w_cspecs.info_ptr);
+}
+
 
 /******************************
 *
@@ -605,37 +640,48 @@ size_t wread(void *ptr, size_t size, WFILE *wmfp)
 	return ((char *)buf - (char *)ptr);
 }
 
-/*
-	sizeから最終的に画像のどの部分まで透かしが入るか計算してnew_offsetに格納する関数
-	@wmfp 対象のWFILEのアドレス
-	@new_offset 新しく計算した結果が格納される変数
-	@old_offset 現在のオフセット
-	@size wread()が渡されたsize
-*/
-static void calcOffset(const WFILE *wmfp, woff_t *new_offset, woff_t *old_offset, size_t size)
+static void decompWaterMark_row(WFILE *wmfp, int *first_piece, int *num_even, int *end_piece, size_t size)
 {
-	int plane_bit_total, old_bit_offset, new_bit_offset;
-	int new_offset_odd;
+	int row_writable_bytes;
 
-	plane_bit_total = wmfp->sspecs.x_size * wmfp->sspecs.y_size * 4;	/* 1ビットプレーン何ビット入るか */
+	row_writable_bytes = wmfp->sspecs.row_bytes / 8;
 
-	old_bit_offset = plane_bit_total * old_offset->plane_no + (old_offset->y * wmfp->sspecs.x_size * 4) + old_offset->x * 4;
-	new_bit_offset = old_bit_offset + size * 8;
+	*first_piece = (wmfp->sspecs.x_size - wmfp->offset.x) * 4 / 8;
+	*num_even = (size - *first_piece) / row_writable_bytes;
+	*end_piece = (size - *first_piece) % row_writable_bytes;
 
 #ifdef DEBUG
-	printOffset(old_offset);
-	printf("plane_bit_total:%d\n", plane_bit_total);
-	printf("old_bit_offset:%d\n", old_bit_offset);
-	printf("new_bit_offset:%d\n", new_bit_offset);
+	printf("first_piece:%d\n", *first_piece);
+	printf("num_even:%d\n", *num_even);
+	printf("end_piece:%d\n", *end_piece);
 #endif
+}
 
-	new_offset->plane_no = new_bit_offset / plane_bit_total;
+static void decompWaterMark_plane(WFILE *wmfp, int *first_piece, int *num_even, int *end_piece, size_t size)
+{
+	int plane_writable_bytes, row_writable_bytes, plane_offset_bytes;
 
-	new_offset_odd = new_bit_offset % plane_bit_total;
+	row_writable_bytes = wmfp->sspecs.row_bytes / 8;
+	plane_writable_bytes = row_writable_bytes * wmfp->sspecs.y_size;
 
-	new_offset->color = 0;	/* ALPHAチャンネルありの場合4ドットなので */
-	new_offset->y = new_offset_odd / (wmfp->sspecs.x_size * 4);
-	new_offset->x = (new_offset_odd % (wmfp->sspecs.x_size * 4)) / 4;	/* 1ピクセル4ドットなので最後に4で割る */
+	plane_offset_bytes = wmfp->offset.y * row_writable_bytes + (wmfp->offset.x * 4 / 8);	/* 現在どこまで透かしが埋め込まれているか（単位：バイト） */
+	*first_piece = plane_writable_bytes - plane_offset_bytes;
+
+	if(size < *first_piece){
+		*first_piece = size;
+	}
+	else{
+		;
+	}
+
+	*num_even = (size - *first_piece) / plane_writable_bytes;
+	*end_piece = (size - *first_piece) % plane_writable_bytes;
+
+#ifdef DEBUG
+	printf("first_piece:%d\n", *first_piece);
+	printf("num_even:%d\n", *num_even);
+	printf("end_piece:%d\n", *end_piece);
+#endif
 }
 
 /*
@@ -644,71 +690,37 @@ static void calcOffset(const WFILE *wmfp, woff_t *new_offset, woff_t *old_offset
 */
 size_t wwrite(const void *ptr, size_t size, WFILE *wmfp)
 {
-	int i, row_even, row_odd, row_writable_bytes;
-	woff_t new_offset, old_offset;
+	int i;
+	int first_piece, num_even, end_piece;
 	char *buf = (char *)ptr;
-
-	memset(&new_offset, 0, sizeof(woff_t));
-	memset(&old_offset, 0, sizeof(woff_t));
-
-	/*	row_even:	1行あたりに埋め込める透かしのバイト数
-		row_odd:	1行では埋め込めない透かしのバイト数	*/
 
 	openImageByMode(wmfp);	/* r_cspecsとw_cspecsを準備する */
 
-	/* offsetの設定 */
-	if(wmfp->mode.split.write_pos_end){	/* 追記モードだったら画像からオフセットを設定 */
-		getOffsetFromChunk(&old_offset, wmfp->r_cspecs.png_ptr, wmfp->r_cspecs.info_ptr);
-	}
-	else{
-		wmfp->offset.plane_no = 0;
-		wmfp->offset.x = 0;
-		wmfp->offset.y = 0;
-		wmfp->offset.color = 0;
-	}
-
-	row_writable_bytes = wmfp->sspecs.row_bytes / 8;
-	row_even = size / row_writable_bytes;	
-	row_odd = size % row_writable_bytes;
-
-	calcOffset(wmfp, &new_offset, &old_offset, size);
-
-	setOffsetToChunk(&new_offset, wmfp->w_cspecs.png_ptr, wmfp->w_cspecs.info_ptr);	/* オフセットをセットする */
-	png_write_info(wmfp->w_cspecs.png_ptr, wmfp->w_cspecs.info_ptr);
-
-#ifdef DEBUG
-	printf("even:%d, odd:%d\n", row_even, row_odd);
-#endif
+	setOffset(wmfp, size);
 
 	/* row_pointerのメモリ確保 */
 	wmfp->sspecs.row_pointer = (png_byte *)malloc(wmfp->sspecs.row_bytes);
 
-
 	/* ここにiの初期化コードを追加（現在のオフセットからどの行から書き込みを開始するべきかを決める） */
 
-	for(i = 0; i < row_even; i++){
-		buf += wwrite_row(wmfp, buf, row_writable_bytes);
-#ifdef DEBUG
-		printf("%lu byte wrote\n", (char *)buf - (char *)ptr);
-#endif
+	decompWaterMark_plane(wmfp, &first_piece, &num_even, &end_piece, size);
+	decompWaterMark_row(wmfp, &first_piece, &num_even, &end_piece, size);
+
+	buf += wwrite_row(wmfp, buf, first_piece);
+
+	for(i = 0; i < num_even; i++){
+		buf += wwrite_row(wmfp, buf, wmfp->sspecs.row_bytes / 8);
 	}
-	buf += wwrite_row(wmfp, buf, row_odd);
 
-#ifdef DEBUG
-	printf("%lu byte wrote\n", (char *)buf - (char *)ptr);
-#endif
+	buf += wwrite_row(wmfp, buf, end_piece);
 
-	/* 最後まで書き出す */
-	i += 1;
-
-	for(; i < wmfp->sspecs.y_size; i++){
+	for(i = 2 + num_even; i < wmfp->sspecs.y_size; i++){
 		wwrite_row(wmfp, NULL, 0);
 	}
 
 #ifdef DEBUG
 	printf("%lu byte wrote\n", (char *)buf - (char *)ptr);
 #endif
-
 	return ((char *)buf - (char *)ptr);
 }
 
