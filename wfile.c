@@ -14,8 +14,8 @@
 
 /*
 	TODO
-	オフセットを単純なビット数とする
-	
+	wwrite()で受け取ったsizeバイトの透かしデータを”畳み込む”処理を追加する
+	→これは後々考えることにする
 */
 
 
@@ -545,6 +545,23 @@ static void setOffset(WFILE *wmfp, size_t size)
 	png_write_info(wmfp->w_cspecs.png_ptr, wmfp->w_cspecs.info_ptr);
 }
 
+static void seekBackOffset(WFILE *wmfp)
+{
+	if(wmfp->r_cspecs.fp){
+		png_destroy_read_struct(&wmfp->r_cspecs.png_ptr, &wmfp->w_cspecs.info_ptr, NULL);
+		fclose(wmfp->r_cspecs.fp);
+	}
+
+	if(wmfp->w_cspecs.fp){
+		png_write_end(wmfp->w_cspecs.png_ptr, NULL);
+
+		png_destroy_write_struct(&wmfp->w_cspecs.png_ptr, &wmfp->w_cspecs.info_ptr);
+		fclose(wmfp->w_cspecs.fp);
+	}
+
+	openImageByMode(wmfp);
+}
+
 
 /******************************
 *
@@ -640,24 +657,52 @@ size_t wread(void *ptr, size_t size, WFILE *wmfp)
 	return ((char *)buf - (char *)ptr);
 }
 
-static void decompWaterMark_row(WFILE *wmfp, int *first_piece, int *num_even, int *end_piece, size_t size)
+/* データを単位データ量で扱う時のデータ構造 */
+typedef struct {
+	int first_piece;
+	int num_even;
+	int end_piece;
+}DDECOMP_T;
+
+/*
+	sizeバイトの領域を行単位でfirst_piece, num_even, end_pieceに分割する関数
+	@wmfp 対象のWFILEのアドレス
+	@first_piece, @num_even, @end_piece 格納される変数のアドレス（単位：バイト）
+	@size データのサイズ
+*/
+static void decompWaterMark_row(WFILE *wmfp, DDECOMP_T *decomp, size_t size)
 {
 	int row_writable_bytes;
 
 	row_writable_bytes = wmfp->sspecs.row_bytes / 8;
 
-	*first_piece = (wmfp->sspecs.x_size - wmfp->offset.x) * 4 / 8;
-	*num_even = (size - *first_piece) / row_writable_bytes;
-	*end_piece = (size - *first_piece) % row_writable_bytes;
+	decomp->first_piece = (wmfp->sspecs.x_size - wmfp->offset.x) * 4 / 8;
+
+	if(size < decomp->first_piece){	/* sizeが極端に小さい値だったら */
+		decomp->first_piece = size;
+	}
+	else{
+		;
+	}
+
+	decomp->num_even = (size - decomp->first_piece) / row_writable_bytes;
+	decomp->end_piece = (size - decomp->first_piece) % row_writable_bytes;
 
 #ifdef DEBUG
-	printf("first_piece:%d\n", *first_piece);
-	printf("num_even:%d\n", *num_even);
-	printf("end_piece:%d\n", *end_piece);
+	printf("first_piece:%d\n", decomp->first_piece);
+	printf("num_even:%d\n", decomp->num_even);
+	printf("end_piece:%d\n", decomp->end_piece);
 #endif
 }
 
-static void decompWaterMark_plane(WFILE *wmfp, int *first_piece, int *num_even, int *end_piece, size_t size)
+
+/*
+	sizeバイトの領域をビットプレーン単位でfirst_piece, num_even, end_pieceに分割する関数
+	@wmfp 対象のWFILEのアドレス
+	@first_piece, @num_even, @end_piece 格納される変数のアドレス（単位：バイト）
+	@size データのサイズ
+*/
+static void decompWaterMark_plane(WFILE *wmfp, DDECOMP_T *decomp, size_t size)
 {
 	int plane_writable_bytes, row_writable_bytes, plane_offset_bytes;
 
@@ -665,24 +710,96 @@ static void decompWaterMark_plane(WFILE *wmfp, int *first_piece, int *num_even, 
 	plane_writable_bytes = row_writable_bytes * wmfp->sspecs.y_size;
 
 	plane_offset_bytes = wmfp->offset.y * row_writable_bytes + (wmfp->offset.x * 4 / 8);	/* 現在どこまで透かしが埋め込まれているか（単位：バイト） */
-	*first_piece = plane_writable_bytes - plane_offset_bytes;
 
-	if(size < *first_piece){
-		*first_piece = size;
+	decomp->first_piece = plane_writable_bytes - plane_offset_bytes;
+
+	if(size < decomp->first_piece){	/* sizeが極端に小さい値だったら */
+		decomp->first_piece = size;
 	}
 	else{
 		;
 	}
 
-	*num_even = (size - *first_piece) / plane_writable_bytes;
-	*end_piece = (size - *first_piece) % plane_writable_bytes;
+	decomp->num_even = (size - decomp->first_piece) / plane_writable_bytes;
+	decomp->end_piece = (size - decomp->first_piece) % plane_writable_bytes;
 
 #ifdef DEBUG
-	printf("first_piece:%d\n", *first_piece);
-	printf("num_even:%d\n", *num_even);
-	printf("end_piece:%d\n", *end_piece);
+	printf("first_piece:%d\n", decomp->first_piece);
+	printf("num_even:%d\n", decomp->num_even);
+	printf("end_piece:%d\n", decomp->end_piece);
 #endif
 }
+
+/*
+	前回書き込んだ続きからビットプレーンの終わりまで書き込む関数
+	@wmfp 対象のWFILEのアドレス
+	@buf 透かしが入っているバッファ
+	@decomp_row 行単位のDDECOMP_T変数
+	return 書き込まれたバイト数
+*/
+static size_t writeFirstPiece(WFILE *wmfp, char *buf, const DDECOMP_T *decomp_row)
+{
+	int i;
+	char *ptr;
+
+	ptr = buf;
+
+	buf += wwrite_row(wmfp, buf, decomp_row->first_piece);
+
+	for(i = wmfp->offset.y; i < wmfp->sspecs.y_size; i++){
+		buf += wwrite_row(wmfp, buf, wmfp->sspecs.row_bytes / 8);
+	}
+
+	return (buf - ptr);
+}
+
+/*
+	もしwwrite()で複数枚のビットプレーンの領域が必要だったら呼び出される関数
+	@wmfp 対象のWFILEのアドレス
+	@buf 透かしが入っているバッファ
+	@decomp_plane
+*/
+static size_t writeNumEven(WFILE *wmfp, char *buf, const DDECOMP_T *decomp_plane)
+{
+	int i, j;
+	char *ptr;
+
+	ptr = buf;
+
+	for(i = 0; i < decomp_plane->num_even; i++){
+		for(j = 0; j < wmfp->sspecs.y_size; j++){
+			buf += wwrite_row(wmfp, buf, wmfp->sspecs.row_bytes / 8);
+		}
+		seekBackOffset(wmfp);	/* 一枚分書き込んだのでもう一度オープンしなおす */
+	}
+
+	return (buf - ptr);
+}
+
+static size_t writeEndPiece(WFILE *wmfp, char *buf, const DDECOMP_T *decomp_row, const DDECOMP_T *decomp_plane)
+{
+	int i, end_piece_even;
+	char *ptr;
+
+	ptr = buf;
+
+	end_piece_even = decomp_plane->end_piece / (wmfp->sspecs.row_bytes / 8);
+
+	/* まず行単位で出力する */
+	for(i = 0; i < end_piece_even; i++){
+		buf += wwrite_row(wmfp, buf, wmfp->sspecs.row_bytes / 8);
+	}
+
+	buf += wwrite_row(wmfp, buf, decomp_row->end_piece);
+
+	/* 最後まで書き出す */
+	for(i = (wmfp->offset.x == 0 ? wmfp->offset.y : wmfp->offset.y + 1); i < wmfp->sspecs.y_size; i++){
+		wwrite_row(wmfp, NULL, 0);
+	}
+
+	return (buf - ptr);
+}
+
 
 /*
 	prtからsizeバイトのデータをwmfpに書込む関数
@@ -691,8 +808,8 @@ static void decompWaterMark_plane(WFILE *wmfp, int *first_piece, int *num_even, 
 size_t wwrite(const void *ptr, size_t size, WFILE *wmfp)
 {
 	int i;
-	int first_piece, num_even, end_piece;
 	char *buf = (char *)ptr;
+	DDECOMP_T decomp_row, decomp_plane;
 
 	openImageByMode(wmfp);	/* r_cspecsとw_cspecsを準備する */
 
@@ -701,22 +818,28 @@ size_t wwrite(const void *ptr, size_t size, WFILE *wmfp)
 	/* row_pointerのメモリ確保 */
 	wmfp->sspecs.row_pointer = (png_byte *)malloc(wmfp->sspecs.row_bytes);
 
-	/* ここにiの初期化コードを追加（現在のオフセットからどの行から書き込みを開始するべきかを決める） */
+	decompWaterMark_plane(wmfp, &decomp_plane, size);
+	decompWaterMark_row(wmfp, &decomp_row, size);
 
-	decompWaterMark_plane(wmfp, &first_piece, &num_even, &end_piece, size);
-	decompWaterMark_row(wmfp, &first_piece, &num_even, &end_piece, size);
+#if 1
+	buf += wwrite_row(wmfp, buf, decomp_row.first_piece);
 
-	buf += wwrite_row(wmfp, buf, first_piece);
-
-	for(i = 0; i < num_even; i++){
+	for(i = 0; i < decomp_row.num_even; i++){
 		buf += wwrite_row(wmfp, buf, wmfp->sspecs.row_bytes / 8);
 	}
 
-	buf += wwrite_row(wmfp, buf, end_piece);
+	buf += wwrite_row(wmfp, buf, decomp_row.end_piece);
 
-	for(i = 2 + num_even; i < wmfp->sspecs.y_size; i++){
+	for(i = (wmfp->offset.x == 0 ? wmfp->offset.y : wmfp->offset.y + 1); i < wmfp->sspecs.y_size; i++){
 		wwrite_row(wmfp, NULL, 0);
 	}
+#endif
+
+#if 0
+	writeFirstPiece(wmfp, buf, &decomp_row);
+	writeNumEven(wmfp, buf, &decomp_row);
+	writeEndPiece(wmfp, buf, &decomp_row, &decomp_plane);
+#endif
 
 #ifdef DEBUG
 	printf("%lu byte wrote\n", (char *)buf - (char *)ptr);
