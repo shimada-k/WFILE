@@ -9,7 +9,7 @@ watermark.o: watermark.c
 	#cc -Wall -c watermark.c
 
 wfile.o: bitops.h wfile.c wfile.h
-	cc -Wall -c wfile.c -DDEBUG
+	cc -Wall -c wfile.c
 
 bitops.o: bitops.c bitops.h
 	cc -Wall -c bitops.c
