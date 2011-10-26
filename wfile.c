@@ -14,8 +14,8 @@
 
 /*
 	TODO
-	wwrite()で受け取ったsizeバイトの透かしデータを”畳み込む”処理を追加する
-	→これは後々考えることにする
+	setOffset()は現在wwrite()で読んでいるが、ここでいいのか？
+		reOpenImage()の中でもsetOffset()は必要
 */
 
 
@@ -90,11 +90,11 @@ static void getOffsetFromChunk(woff_t *offset, struct png_control_specs *cspecs)
 	/* コメントの取得 */
 	num_comments = png_get_text(cspecs->png_ptr, cspecs->info_ptr, &text_ptr, &num_text);
 
+	printf("num_comments : %d\n", num_comments);
+
 	if(num_comments == 0){
 		return;
 	}
-
-	printf("num_comments : %d\n", num_comments);
 
 #ifdef DEBUG
 	printf("[key words]\n%s\n", text_ptr->key);
@@ -325,9 +325,9 @@ static size_t wwrite_row(WFILE *wmfp, const char *ptr, size_t size)
 
 	memset(wmfp->sspecs.row_pointer, 0, wmfp->sspecs.row_bytes);
 
-	if (setjmp(png_jmpbuf(wmfp->r_cspecs.png_ptr))){
-		puts("[write_row] Error during read_image");
-	}
+	//if(setjmp(png_jmpbuf(wmfp->r_cspecs.png_ptr))){
+	//	puts("[write_row] Error during read_image");
+	//}
 
 	png_read_row(wmfp->r_cspecs.png_ptr, wmfp->sspecs.row_pointer, NULL);	/* 画像から1行分のデータをrow_pointerに読み込む */
 
@@ -465,7 +465,7 @@ static void openImageByMode(WFILE *wmfp)
 
 	hidden_path = (char *)malloc(len);
 
-	sprintf(hidden_path, ".%s", wmfp->path);	/* 隠しファイルのパスを生成 */
+	sprintf(hidden_path, "_%s", wmfp->path);	/* 隠しファイルのパスを生成 */
 
 #ifdef DEBUG
 	printf("hidden_path:%s\n", hidden_path);
@@ -545,8 +545,20 @@ static void setOffset(WFILE *wmfp, size_t size)
 	png_write_info(wmfp->w_cspecs.png_ptr, wmfp->w_cspecs.info_ptr);
 }
 
-static void seekBackOffset(WFILE *wmfp)
+/*
+	png_write_row()は１行単位でしか処理を行えず、seekするAPIも用意されてないので、
+	１枚分書き込んだら、再度openしなおさないといけない
+	@wmfp WFILEエントリ
+*/
+static void reOpenImage(WFILE *wmfp)
 {
+	int len;
+	char *hidden_path;
+	woff_t offset;
+
+	/* hidden_pathのチャンクにオフセットが記録されている（r_cspecsからチャンクをコピーするのはwwread()のsetOffset()でやっている） */
+	getOffsetFromChunk(&offset, &wmfp->w_cspecs);
+
 	if(wmfp->r_cspecs.fp){
 		png_destroy_read_struct(&wmfp->r_cspecs.png_ptr, &wmfp->w_cspecs.info_ptr, NULL);
 		fclose(wmfp->r_cspecs.fp);
@@ -557,11 +569,102 @@ static void seekBackOffset(WFILE *wmfp)
 
 		png_destroy_write_struct(&wmfp->w_cspecs.png_ptr, &wmfp->w_cspecs.info_ptr);
 		fclose(wmfp->w_cspecs.fp);
+
+		len = strlen(wmfp->path) + 1 + 1;
+		hidden_path = (char *)malloc(len);
+
+		sprintf(hidden_path, "_%s", wmfp->path);
+
+		rename(hidden_path, wmfp->path);	/* mv ./.img.png img.png */
+		free(hidden_path);
 	}
 
 	openImageByMode(wmfp);
+
+	if(wmfp->mode.split.write_pos_end){
+		setOffsetToChunk(&offset, &wmfp->w_cspecs);
+		png_write_info(wmfp->w_cspecs.png_ptr, wmfp->w_cspecs.info_ptr);
+	}
+
+	/* wmfp->offsetの設定はwwrite()の中のsetOffset()で済んでいる */
 }
 
+/* データを単位データ量で扱う時のデータ構造 */
+typedef struct {
+	int first_piece;
+	int num_even;
+	int end_piece;
+}DDECOMP_T;
+
+/*
+	sizeバイトの領域を行単位でfirst_piece, num_even, end_pieceに分割する関数
+	@wmfp 対象のWFILEのアドレス
+	@first_piece, @num_even, @end_piece 格納される変数のアドレス（単位：バイト）
+	@size データのサイズ
+*/
+static void decompWaterMark_row(WFILE *wmfp, DDECOMP_T *decomp, size_t size)
+{
+	int row_writable_bytes;
+
+	row_writable_bytes = wmfp->sspecs.row_bytes / 8;
+
+	decomp->first_piece = (wmfp->sspecs.x_size - wmfp->offset.x) * 4 / 8;
+
+	if(size < decomp->first_piece){	/* sizeが極端に小さい値だったら */
+		decomp->first_piece = size;
+	}
+	else{
+		;
+	}
+
+	decomp->num_even = (size - decomp->first_piece) / row_writable_bytes;
+	decomp->end_piece = (size - decomp->first_piece) % row_writable_bytes;
+
+#ifdef DEBUG
+	printf("first_piece:%d\n", decomp->first_piece);
+	printf("num_even:%d\n", decomp->num_even);
+	printf("end_piece:%d\n", decomp->end_piece);
+#endif
+}
+
+/*
+	wwrite()から呼び出される関数で、decomp_rowにしたがって、調整しながら書き込んでいく
+	@wmfp 対象のWFILEのアドレス
+	@buf 透かしが入ったバッファ
+	@decomp_row DDECOMP_Tのアドレス
+*/
+static size_t writeRows(WFILE *wmfp, char *buf, const DDECOMP_T *decomp_row)
+{
+	int i, grain;
+	char *ptr;
+
+	/* まずoffsetに従ってseekする */
+	for(i = 0; i < wmfp->offset.y; i++){
+		wwrite_row(wmfp, NULL, 0);
+	}
+
+	ptr = buf;
+	buf += wwrite_row(wmfp, buf, decomp_row->first_piece);
+
+	grain = wmfp->sspecs.row_bytes / 8;
+
+	for(i = 0; i < decomp_row->num_even; i++){
+		buf += wwrite_row(wmfp, buf, grain);
+
+		if(wmfp->offset.y == 0 && wmfp->offset.x == 0 && wmfp->offset.color == COLOR_RED){
+			reOpenImage(wmfp);	/* 一枚分書き込んだのでもう一度オープンしなおす */
+		}
+	}
+
+	buf += wwrite_row(wmfp, buf, decomp_row->end_piece);
+
+	/* 最後まで書き出す */
+	for(i = (wmfp->offset.x == 0 ? wmfp->offset.y : wmfp->offset.y + 1); i < wmfp->sspecs.y_size; i++){
+		wwrite_row(wmfp, NULL, 0);
+	}
+
+	return (buf - ptr);
+}
 
 /******************************
 *
@@ -631,6 +734,12 @@ size_t wread(void *ptr, size_t size, WFILE *wmfp)
 
 	openImageByMode(wmfp);
 
+#ifdef DEBUG
+	woff_t offset;
+	getOffsetFromChunk(&offset, &wmfp->r_cspecs);
+	printOffset(&offset);
+#endif
+
 	/* row_pointerのメモリ確保 */
 	wmfp->sspecs.row_pointer = (png_byte *)malloc(wmfp->sspecs.row_bytes);
 
@@ -657,193 +766,31 @@ size_t wread(void *ptr, size_t size, WFILE *wmfp)
 	return ((char *)buf - (char *)ptr);
 }
 
-/* データを単位データ量で扱う時のデータ構造 */
-typedef struct {
-	int first_piece;
-	int num_even;
-	int end_piece;
-}DDECOMP_T;
-
-/*
-	sizeバイトの領域を行単位でfirst_piece, num_even, end_pieceに分割する関数
-	@wmfp 対象のWFILEのアドレス
-	@first_piece, @num_even, @end_piece 格納される変数のアドレス（単位：バイト）
-	@size データのサイズ
-*/
-static void decompWaterMark_row(WFILE *wmfp, DDECOMP_T *decomp, size_t size)
-{
-	int row_writable_bytes;
-
-	row_writable_bytes = wmfp->sspecs.row_bytes / 8;
-
-	decomp->first_piece = (wmfp->sspecs.x_size - wmfp->offset.x) * 4 / 8;
-
-	if(size < decomp->first_piece){	/* sizeが極端に小さい値だったら */
-		decomp->first_piece = size;
-	}
-	else{
-		;
-	}
-
-	decomp->num_even = (size - decomp->first_piece) / row_writable_bytes;
-	decomp->end_piece = (size - decomp->first_piece) % row_writable_bytes;
-
-#ifdef DEBUG
-	printf("first_piece:%d\n", decomp->first_piece);
-	printf("num_even:%d\n", decomp->num_even);
-	printf("end_piece:%d\n", decomp->end_piece);
-#endif
-}
-
-
-/*
-	sizeバイトの領域をビットプレーン単位でfirst_piece, num_even, end_pieceに分割する関数
-	@wmfp 対象のWFILEのアドレス
-	@first_piece, @num_even, @end_piece 格納される変数のアドレス（単位：バイト）
-	@size データのサイズ
-*/
-static void decompWaterMark_plane(WFILE *wmfp, DDECOMP_T *decomp, size_t size)
-{
-	int plane_writable_bytes, row_writable_bytes, plane_offset_bytes;
-
-	row_writable_bytes = wmfp->sspecs.row_bytes / 8;
-	plane_writable_bytes = row_writable_bytes * wmfp->sspecs.y_size;
-
-	plane_offset_bytes = wmfp->offset.y * row_writable_bytes + (wmfp->offset.x * 4 / 8);	/* 現在どこまで透かしが埋め込まれているか（単位：バイト） */
-
-	decomp->first_piece = plane_writable_bytes - plane_offset_bytes;
-
-	if(size < decomp->first_piece){	/* sizeが極端に小さい値だったら */
-		decomp->first_piece = size;
-	}
-	else{
-		;
-	}
-
-	decomp->num_even = (size - decomp->first_piece) / plane_writable_bytes;
-	decomp->end_piece = (size - decomp->first_piece) % plane_writable_bytes;
-
-#ifdef DEBUG
-	printf("first_piece:%d\n", decomp->first_piece);
-	printf("num_even:%d\n", decomp->num_even);
-	printf("end_piece:%d\n", decomp->end_piece);
-#endif
-}
-
-/*
-	前回書き込んだ続きからビットプレーンの終わりまで書き込む関数
-	@wmfp 対象のWFILEのアドレス
-	@buf 透かしが入っているバッファ
-	@decomp_row 行単位のDDECOMP_T変数
-	return 書き込まれたバイト数
-*/
-static size_t writeFirstPiece(WFILE *wmfp, char *buf, const DDECOMP_T *decomp_row)
-{
-	int i;
-	char *ptr;
-
-	ptr = buf;
-
-	buf += wwrite_row(wmfp, buf, decomp_row->first_piece);
-
-	for(i = wmfp->offset.y; i < wmfp->sspecs.y_size; i++){
-		buf += wwrite_row(wmfp, buf, wmfp->sspecs.row_bytes / 8);
-	}
-
-	return (buf - ptr);
-}
-
-/*
-	もしwwrite()で複数枚のビットプレーンの領域が必要だったら呼び出される関数
-	@wmfp 対象のWFILEのアドレス
-	@buf 透かしが入っているバッファ
-	@decomp_plane
-*/
-static size_t writeNumEven(WFILE *wmfp, char *buf, const DDECOMP_T *decomp_plane)
-{
-	int i, j;
-	char *ptr;
-
-	ptr = buf;
-
-	for(i = 0; i < decomp_plane->num_even; i++){
-		for(j = 0; j < wmfp->sspecs.y_size; j++){
-			buf += wwrite_row(wmfp, buf, wmfp->sspecs.row_bytes / 8);
-		}
-		seekBackOffset(wmfp);	/* 一枚分書き込んだのでもう一度オープンしなおす */
-	}
-
-	return (buf - ptr);
-}
-
-static size_t writeEndPiece(WFILE *wmfp, char *buf, const DDECOMP_T *decomp_row, const DDECOMP_T *decomp_plane)
-{
-	int i, end_piece_even;
-	char *ptr;
-
-	ptr = buf;
-
-	end_piece_even = decomp_plane->end_piece / (wmfp->sspecs.row_bytes / 8);
-
-	/* まず行単位で出力する */
-	for(i = 0; i < end_piece_even; i++){
-		buf += wwrite_row(wmfp, buf, wmfp->sspecs.row_bytes / 8);
-	}
-
-	buf += wwrite_row(wmfp, buf, decomp_row->end_piece);
-
-	/* 最後まで書き出す */
-	for(i = (wmfp->offset.x == 0 ? wmfp->offset.y : wmfp->offset.y + 1); i < wmfp->sspecs.y_size; i++){
-		wwrite_row(wmfp, NULL, 0);
-	}
-
-	return (buf - ptr);
-}
-
-
 /*
 	prtからsizeバイトのデータをwmfpに書込む関数
 	return 実際に書き込めたデータの個数
 */
 size_t wwrite(const void *ptr, size_t size, WFILE *wmfp)
 {
-	int i;
 	char *buf = (char *)ptr;
-	DDECOMP_T decomp_row, decomp_plane;
+	DDECOMP_T decomp_row;
 
 	openImageByMode(wmfp);	/* r_cspecsとw_cspecsを準備する */
 
-	setOffset(wmfp, size);
+	setOffset(wmfp, size);	/* この中でwmfp->offsetも設定されている */
 
 	/* row_pointerのメモリ確保 */
 	wmfp->sspecs.row_pointer = (png_byte *)malloc(wmfp->sspecs.row_bytes);
 
-	decompWaterMark_plane(wmfp, &decomp_plane, size);
 	decompWaterMark_row(wmfp, &decomp_row, size);
-
-#if 1
-	buf += wwrite_row(wmfp, buf, decomp_row.first_piece);
-
-	for(i = 0; i < decomp_row.num_even; i++){
-		buf += wwrite_row(wmfp, buf, wmfp->sspecs.row_bytes / 8);
-	}
-
-	buf += wwrite_row(wmfp, buf, decomp_row.end_piece);
-
-	for(i = (wmfp->offset.x == 0 ? wmfp->offset.y : wmfp->offset.y + 1); i < wmfp->sspecs.y_size; i++){
-		wwrite_row(wmfp, NULL, 0);
-	}
-#endif
-
-#if 0
-	writeFirstPiece(wmfp, buf, &decomp_row);
-	writeNumEven(wmfp, buf, &decomp_row);
-	writeEndPiece(wmfp, buf, &decomp_row, &decomp_plane);
-#endif
+	writeRows(wmfp, buf, &decomp_row);
 
 #ifdef DEBUG
 	printf("%lu byte wrote\n", (char *)buf - (char *)ptr);
 #endif
+
+	free(wmfp->sspecs.row_pointer);
+
 	return ((char *)buf - (char *)ptr);
 }
 
@@ -871,13 +818,12 @@ void wclose(WFILE *wmfp)
 		len = strlen(wmfp->path) + 1 + 1;
 		hidden_path = (char *)malloc(len);
 
-		sprintf(hidden_path, ".%s", wmfp->path);
+		sprintf(hidden_path, "_%s", wmfp->path);
 		rename(hidden_path, wmfp->path);	/* 隠しファイルを置き換える */
 		free(hidden_path);
 	}
 
 	free(wmfp->path);	/* wopen()でmallocした分 */
-	free(wmfp->sspecs.row_pointer);
 	free(wmfp);
 }
 
