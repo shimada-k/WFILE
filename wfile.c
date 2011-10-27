@@ -14,8 +14,8 @@
 
 /*
 	TODO
-	setOffset()は現在wwrite()で読んでいるが、ここでいいのか？
-		reOpenImage()の中でもsetOffset()は必要
+	一回呼び出せばいいwriteRows()ではなく、何回でも呼び出せるwriteRow()を書く
+	→最終的はwwrite()をユーザ側で繰り返し呼ばせたいから
 */
 
 
@@ -55,6 +55,16 @@ static png_byte getColorFromOft(WFILE *wmfp)
 static void setColorFromOft(png_byte val, WFILE *wmfp)
 {
 	wmfp->sspecs.row_pointer[wmfp->offset.x * 4 + wmfp->offset.color] = val;
+}
+
+/*	
+	一行に埋め込める空かしのバイト数を計算し、返す関数
+	@wmfp 対象のWFILEのアドレス
+	return 1行であるビットプレーンに埋め込める透かしのバイト数
+*/
+static unsigned int calcWritableByte_row(WFILE *wmfp)
+{
+	return (wmfp->sspecs.row_bytes / 8);
 }
 
 /*
@@ -307,6 +317,7 @@ static size_t wread_row(WFILE *wmfp, char *ptr, size_t size)
 
 /*
 	１行分のデータをwmfp->sspecs.row_pointersに書き込む関数
+	※この関数が呼び出される前に、次に書き込まれる行まで頭出しされていること前提
 	@wmfp 対象のWFILEのアドレス
 	@ptr 1行分のバイトデータ
 	@size ptrからフェッチするサイズ
@@ -317,8 +328,9 @@ static size_t wwrite_row(WFILE *wmfp, const char *ptr, size_t size)
 	int i;
 	size_t ret = 0;
 
+
 #ifdef DEBUG
-	if(size < wmfp->sspecs.row_bytes / 8){
+	if(size < calcWritableByte_row(wmfp)){
 		printf("[wwrite_row]Notice, End line size = %lu\n", size);	/* size < row_bytesだった時 */
 	}
 #endif
@@ -581,7 +593,7 @@ static void decompWaterMark_row(WFILE *wmfp, DDECOMP_T *decomp, size_t size)
 {
 	int row_writable_bytes;
 
-	row_writable_bytes = wmfp->sspecs.row_bytes / 8;
+	row_writable_bytes = calcWritableByte_row(wmfp);
 
 	decomp->first_piece = (wmfp->sspecs.x_size - wmfp->offset.x) * 4 / 8;
 
@@ -611,18 +623,13 @@ static void decompWaterMark_row(WFILE *wmfp, DDECOMP_T *decomp, size_t size)
 */
 static size_t writeRows(WFILE *wmfp, char *buf, const DDECOMP_T *decomp_row)
 {
-	int i, grain;
+	int i, grain = calcWritableByte_row(wmfp);
 	char *ptr;
 
-	/* まずoffsetに従ってseekする */
-	for(i = 0; i < wmfp->offset.y; i++){
-		wwrite_row(wmfp, NULL, 0);
-	}
-
 	ptr = buf;
-	buf += wwrite_row(wmfp, buf, decomp_row->first_piece);
 
-	grain = wmfp->sspecs.row_bytes / 8;
+	/* 実際に行ごとに書き込む */
+	buf += wwrite_row(wmfp, buf, decomp_row->first_piece);
 
 	for(i = 0; i < decomp_row->num_even; i++){
 		buf += wwrite_row(wmfp, buf, grain);
@@ -634,10 +641,6 @@ static size_t writeRows(WFILE *wmfp, char *buf, const DDECOMP_T *decomp_row)
 
 	buf += wwrite_row(wmfp, buf, decomp_row->end_piece);
 
-	/* 最後まで書き出す */
-	for(i = (wmfp->offset.x == 0 ? wmfp->offset.y : wmfp->offset.y + 1); i < wmfp->sspecs.y_size; i++){
-		wwrite_row(wmfp, NULL, 0);
-	}
 
 	return (buf - ptr);
 }
@@ -694,6 +697,11 @@ WFILE *wopen(const char *path, const char *str)
 		puts("Invalide wopen mode");
 	}
 
+	openImageByMode(wmfp);	/* r_cspecsとw_cspecsを準備する */
+
+	/* row_pointerのメモリ確保 */
+	wmfp->sspecs.row_pointer = (png_byte *)malloc(wmfp->sspecs.row_bytes);
+
 	return wmfp;
 }
 
@@ -708,18 +716,13 @@ size_t wread(void *ptr, size_t size, WFILE *wmfp)
 	int i, row_even, row_odd, row_writable_bytes;
 	char *buf = (char *)ptr;
 
-	openImageByMode(wmfp);
-
 #ifdef DEBUG
 	woff_t offset;
 	getOffsetFromChunk(&offset, &wmfp->r_cspecs);
 	printOffset(&offset);
 #endif
 
-	/* row_pointerのメモリ確保 */
-	wmfp->sspecs.row_pointer = (png_byte *)malloc(wmfp->sspecs.row_bytes);
-
-	row_writable_bytes = wmfp->sspecs.row_bytes / 8;
+	row_writable_bytes = calcWritableByte_row(wmfp);
 	row_even = size / row_writable_bytes;
 	row_odd = size % row_writable_bytes;
 
@@ -750,10 +753,9 @@ size_t wwrite(const void *ptr, size_t size, WFILE *wmfp)
 {
 	char *buf = (char *)ptr;
 	size_t ret;
+	int i;
 	woff_t offt_assumed;
 	DDECOMP_T decomp_row;
-
-	openImageByMode(wmfp);	/* r_cspecsとw_cspecsを準備する */
 
 	memset(&offt_assumed, 0, sizeof(woff_t));
 
@@ -761,7 +763,7 @@ size_t wwrite(const void *ptr, size_t size, WFILE *wmfp)
 	if(wmfp->mode.split.write_pos_end){	/* 追記モードだったら画像からオフセットを設定 */
 		getOffsetFromChunk(&wmfp->offset, &wmfp->r_cspecs);
 	}
-	else{
+	else{	/* 追記モードでなかったら、オフセットは先頭から */
 		memset(&wmfp->offset, 0, sizeof(woff_t));
 	}
 
@@ -772,11 +774,15 @@ size_t wwrite(const void *ptr, size_t size, WFILE *wmfp)
 	/* 書き込み完了後のオフセット本体に書き込む */
 	setOffsetToChunk(&offt_assumed, &wmfp->w_cspecs);
 
-	/* row_pointerのメモリ確保 */
-	wmfp->sspecs.row_pointer = (png_byte *)malloc(wmfp->sspecs.row_bytes);
-
 	/* first_piece, num_even, end_pieceの計算 */
 	decompWaterMark_row(wmfp, &decomp_row, size);
+
+	/* 追記モードだったら、offsetに従ってseekして頭出し */
+	if(wmfp->mode.split.write_pos_end){
+		for(i = 0; i < wmfp->offset.y; i++){
+			wwrite_row(wmfp, NULL, 0);
+		}
+	}
 
 	/* 書き込み処理 */
 	ret = writeRows(wmfp, buf, &decomp_row);
@@ -784,8 +790,6 @@ size_t wwrite(const void *ptr, size_t size, WFILE *wmfp)
 #ifdef DEBUG
 	printf("%lu byte wrote\n", ret);
 #endif
-
-	free(wmfp->sspecs.row_pointer);
 
 	return ret;
 }
@@ -796,14 +800,17 @@ size_t wwrite(const void *ptr, size_t size, WFILE *wmfp)
 */
 void wclose(WFILE *wmfp)
 {
-	if(wmfp->r_cspecs.fp){
-		png_destroy_read_struct(&wmfp->r_cspecs.png_ptr, &wmfp->w_cspecs.info_ptr, NULL);
-		fclose(wmfp->r_cspecs.fp);
-	}
+	int i;
 
 	if(wmfp->w_cspecs.fp){
 		char *hidden_path;
 
+#if 1
+		/* 最後まで書き出す */
+		for(i = (wmfp->offset.x == 0 ? wmfp->offset.y : wmfp->offset.y + 1); i < wmfp->sspecs.y_size; i++){
+			wwrite_row(wmfp, NULL, 0);
+		}
+#endif
 		png_write_end(wmfp->w_cspecs.png_ptr, NULL);
 
 		png_destroy_write_struct(&wmfp->w_cspecs.png_ptr, &wmfp->w_cspecs.info_ptr);
@@ -815,6 +822,12 @@ void wclose(WFILE *wmfp)
 		free(hidden_path);
 	}
 
+	if(wmfp->r_cspecs.fp){
+		png_destroy_read_struct(&wmfp->r_cspecs.png_ptr, &wmfp->w_cspecs.info_ptr, NULL);
+		fclose(wmfp->r_cspecs.fp);
+	}
+
+	free(wmfp->sspecs.row_pointer);
 	free(wmfp->path);	/* wopen()でmallocした分 */
 	free(wmfp);
 }

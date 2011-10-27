@@ -55,7 +55,7 @@ int main(int argc, char *argv[])
 	WFILE *wmfp = NULL;
 	char *path, *words = NULL;
 	long wlength = 0;
-	int mode = -1;
+	int i, mode = -1;
 
 	/* 引数解析 */
 	if(argc == 3){
@@ -106,6 +106,12 @@ int main(int argc, char *argv[])
 
 		printf("%lu charctor is read\n", wlength);
 
+/*
+		for(i = 0; i < 135; i++){
+			wwrite(words, 100, wmfp);
+			words += 100;
+		}
+*/
 		wwrite(words, wlength, wmfp);
 
 		wclose(wmfp);
